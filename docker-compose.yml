@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: timesheet
+      POSTGRES_USER: timesheet
+      POSTGRES_PASSWORD: timesheet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timesheet -d timesheet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Порт на хост: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://timesheet:timesheet@postgres:5432/timesheet
+      TFS_BASE_URL: ${TFS_BASE_URL:-https://tfs.t2.ru/tfs/Main}
+      TFS_PROJECT: ${TFS_PROJECT:-Tele2}
+      TFS_PROJECT_ID: ${TFS_PROJECT_ID:-c56fb5fe-9752-462a-82ae-0b9e10364510}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:5173}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
+      TFS_VERIFY_TLS: ${TFS_VERIFY_TLS:-true}
+    # Порты на хост: docker-compose.dev.yml (nginx :8080) или docker-compose.prod.yml (VPS)
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

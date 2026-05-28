@@ -1,0 +1,23 @@
+# Production: сервисы только на localhost, снаружи — nginx + certbot.
+#
+#   cp .env.production.example .env
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#   sudo bash deploy/apply-production.sh
+
+services:
+  backend:
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${BACKEND_WORKERS:-2}"
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://mateplace.ru}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-https://api.mateplace.ru}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://mateplace.ru,https://www.mateplace.ru}
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-https://api.mateplace.ru}
+    ports:
+      - "127.0.0.1:5173:5173"

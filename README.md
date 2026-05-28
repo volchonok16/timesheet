@@ -1,0 +1,56 @@
+# TFS Timesheet
+
+Современный интерфейс для списания времени в TFS (Tele2): недельный табель, месячный календарь, быстрый поиск требований/задач и запись в **Completed Work** через дочернюю задачу вида `Роль - Активность`.
+
+Авторизация повторяет подход из Ganta/Roadmap: логин/пароль или PAT, сессия хранится на backend.
+
+## Быстрый старт
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Откройте **http://localhost:8080** и войдите в TFS.
+
+Nginx в Docker проксирует frontend (`/`) и API (`/api`). Postgres на хосте: `localhost:5433`.
+
+Production-деплой (VPS + nginx на сервере): см. [deploy/DEPLOY.md](deploy/DEPLOY.md).
+
+## Что уже работает
+
+- Вход в TFS (учётная запись / PAT), как в Ganta
+- Поиск требований, ошибок и задач по номеру или названию
+- Недельный и помесячный табель со списаниями по дням
+- Календарь за месяц с суммой часов по дням
+- Модальное окно «Внести время»: роль, активность, дата, добавить/вычесть, часы/минуты, комментарий
+- Создание/поиск дочерней задачи в TFS и обновление `Microsoft.VSTS.Scheduling.CompletedWork`
+- Локальное хранение дневных списаний в PostgreSQL (для календаря и табеля)
+
+## Архитектура
+
+| Сервис   | Стек              | Доступ (dev)        |
+|----------|-------------------|---------------------|
+| nginx    | nginx:alpine      | http://localhost:8080 |
+| frontend | React + TS + Vite | через nginx         |
+| backend  | FastAPI + httpx   | через nginx `/api`  |
+| postgres | PostgreSQL 16     | localhost:5433      |
+
+## API (основное)
+
+- `POST /api/auth/login` — вход
+- `GET /api/work-items/search?q=` — поиск
+- `GET /api/timesheet?start=&view=week|month` — табель
+- `GET /api/calendar?year=&month=` — календарь
+- `POST /api/time-entries` — списание времени
+
+## Дальнейшие улучшения
+
+- Синхронизация истории из TFS (если списания уже есть только в Completed Work)
+- Шаблоны time-shooting (8ч одним кликом, копирование прошлой недели)
+- Фильтры по area path / команде
+- Экспорт в Excel
+
+## Переменные окружения
+
+См. `.env.example`.
