@@ -26,7 +26,14 @@ class Settings(BaseSettings):
     requirement_type_name: str = Field(default="Требование", alias="TFS_REQUIREMENT_TYPE")
     change_request_type_name: str = Field(default="Запрос на изменение", alias="TFS_CHANGE_REQUEST_TYPE")
     error_type_name: str = Field(default="Ошибка", alias="TFS_ERROR_TYPE")
-    cost_project_field: str = Field(default="Logrocon.PO", alias="TFS_COST_PROJECT_FIELD")
+    cost_project_field: str = Field(
+        default="project.control",
+        alias="TFS_COST_PROJECT_FIELD",
+    )
+    remaining_work_field: str = Field(
+        default="Microsoft.VSTS.Scheduling.RemainingWork",
+        alias="TFS_REMAINING_WORK_FIELD",
+    )
 
     app_public_url: str = Field(default="http://localhost:5173", alias="APP_PUBLIC_URL")
     api_public_url: str = Field(default="http://localhost:8000", alias="API_PUBLIC_URL")

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 from typing import Any
 from urllib.parse import quote
 
@@ -38,6 +39,28 @@ def identity_display(value: Any) -> str | None:
     if isinstance(value, str):
         return value.split("<")[0].strip() if "<" in value else value
     return None
+
+
+def _classification_field_path(path: str, structure_type: str) -> str:
+    parts = [part for part in path.split("\\") if part]
+    if len(parts) > 1 and parts[1].casefold() == structure_type.casefold():
+        parts.pop(1)
+    return "\\".join(parts)
+
+
+def _walk_classification_nodes(nodes: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        result.append(node)
+        for child in as_list(node.get("children")):
+            walk(child)
+
+    for node in as_list(nodes):
+        walk(node)
+    return result
 
 
 class TfsClient:
@@ -338,6 +361,63 @@ class TfsClient:
                     return candidate.strip()
         return None
 
+    async def get_latest_iteration_path(
+        self,
+        *,
+        area_path: str | None = None,
+    ) -> str | None:
+        response = await self._get_with_api_versions(
+            f"/{self.project}/_apis/wit/classificationNodes",
+            params={"$depth": "15"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        roots = payload.get("value") if isinstance(payload, dict) else payload
+        candidates: list[tuple[str, str, str]] = []
+
+        for node in _walk_classification_nodes(roots):
+            if node.get("structureType") != "iteration":
+                continue
+            if node.get("hasChildren"):
+                continue
+            raw_path = node.get("path")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            field_path = _classification_field_path(raw_path, "Iteration")
+            attributes = as_dict(node.get("attributes"))
+            finish_date = str(attributes.get("finishDate") or "")
+            start_date = str(attributes.get("startDate") or "")
+            if finish_date or start_date:
+                candidates.append((finish_date, start_date, field_path))
+
+        if not candidates:
+            return None
+
+        prefixes: list[str] = []
+        if area_path:
+            area_parts = [part for part in area_path.split("\\") if part]
+            if len(area_parts) > 1:
+                prefixes.append(
+                    "\\".join((area_parts[0], "Общие", area_parts[1])) + "\\"
+                )
+        prefixes.append(f"{self.project}\\Общие\\")
+
+        preferred = [
+            item
+            for item in candidates
+            if any(
+                item[2].casefold().startswith(prefix.casefold())
+                for prefix in prefixes
+            )
+        ]
+        pool = preferred or candidates
+        today = date.today().isoformat()
+        current_or_past = [
+            item for item in pool if not item[1] or item[1][:10] <= today
+        ]
+        _finish_date, _start_date, field_path = max(current_or_past or pool)
+        return field_path
+
     async def patch_work_item(self, item_id: int, patch_ops: list[dict[str, Any]]) -> dict[str, Any]:
         path = f"/{self.project}/_apis/wit/workitems/{item_id}"
         headers = {"Content-Type": "application/json-patch+json"}
@@ -382,9 +462,25 @@ class TfsClient:
             last_response.raise_for_status()
         raise httpx.HTTPError("Create work item failed")
 
-    async def update_completed_work(self, item_id: int, hours: float, *, comment: str | None = None) -> dict[str, Any]:
+    async def update_completed_work(
+        self,
+        item_id: int,
+        hours: float,
+        *,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        completed = round(hours, 2)
         ops: list[dict[str, Any]] = [
-            {"op": "replace", "path": "/fields/Microsoft.VSTS.Scheduling.CompletedWork", "value": round(hours, 2)},
+            {
+                "op": "replace",
+                "path": "/fields/Microsoft.VSTS.Scheduling.CompletedWork",
+                "value": completed,
+            },
+            {
+                "op": "replace",
+                "path": f"/fields/{settings.remaining_work_field}",
+                "value": -completed,
+            },
         ]
         if comment:
             ops.append({"op": "add", "path": "/fields/System.History", "value": comment})

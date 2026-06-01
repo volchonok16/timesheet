@@ -202,7 +202,17 @@ async def ensure_tracking_task(
     fields = parent.get("fields") or {}
     area_path = fields.get("System.AreaPath") or f"{client.project}\\Digital"
     extra_fields: dict[str, Any] = {}
-    resolved_cost = cost_project or client.read_field_value(parent, settings.cost_project_field)
+    iteration_path = await client.get_latest_iteration_path(
+        area_path=area_path,
+    )
+    if iteration_path:
+        extra_fields["System.IterationPath"] = iteration_path
+    elif fields.get("System.IterationPath"):
+        extra_fields["System.IterationPath"] = fields["System.IterationPath"]
+    resolved_cost = cost_project or client.read_field_value(
+        parent,
+        settings.cost_project_field,
+    )
     if resolved_cost:
         extra_fields[settings.cost_project_field] = resolved_cost
     created = await client.create_child_task(
