@@ -56,8 +56,20 @@ echo "=== Последние ошибки nginx ==="
 tail -15 /var/log/nginx/error.log 2>/dev/null || echo "(нет доступа к error.log)"
 echo ""
 
+echo "=== mateplace → pallink.fun? ==="
+DOMAIN="${TIMESHEET_DOMAIN:-mateplace.ru}"
+if [[ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+  echo "ВЕРОЯТНАЯ ПРИЧИНА: нет SSL для ${DOMAIN} — HTTPS попадает в vhost pallink"
+  echo "  sudo bash deploy/deploy.sh --issue-ssl"
+  echo "  или: sudo bash deploy/fix-coexist.sh"
+fi
+if grep -rh 'proxy_pass' /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null | grep -qE ':5173|:32573'; then
+  echo "ОШИБКА: mateplace проксирует на порт Ganta (5173) — исправьте fix-coexist"
+fi
+echo "Подробнее: sudo bash deploy/verify-domains.sh"
+echo ""
 echo "=== Рекомендация при 502 ==="
 echo "1) cd $ROOT && sudo bash deploy/deploy.sh"
 echo "2) Порты в nginx = порты из «docker ps» (TIMESHEET_*_PORT в .env)"
-echo "3) pallink: proxy_pass должен указывать на РЕАЛЬНЫЕ порты контейнеров pallink"
+echo "3) pallink nginx только из Ganta (8000/5173)"
 echo "4) sudo nginx -t && sudo systemctl reload nginx"

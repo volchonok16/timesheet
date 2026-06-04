@@ -60,9 +60,27 @@ curl -s http://127.0.0.1:31080/api/health
 
 ## mateplace редиректит на pallink.fun
 
-1. У pallink был `default_server` на 443.
-2. Нет SSL для `mateplace.ru` — HTTPS не попадает в `mateplace.conf`.
-3. В `pallink.conf` ошибочно стояли порты **32573** (из старого шаблона timesheet) вместо **5173**.
+**Чаще всего:** нет сертификата и блоков `listen 443` для `mateplace.ru`. Тогда HTTPS обрабатывает **pallink** (единственный SSL на 443) — в браузере открывается pallink.fun.
+
+Диагностика:
+
+```bash
+sudo bash deploy/verify-domains.sh
+```
+
+Исправление:
+
+```bash
+sudo bash deploy/fix-coexist.sh
+# или только SSL:
+sudo bash deploy/deploy.sh --issue-ssl
+```
+
+Другие причины:
+
+1. `default_server` на 443 у pallink.
+2. В `mateplace.conf` `proxy_pass` на **5173** (Ganta) вместо **31573**.
+3. `sites-enabled/mateplace.conf` отсутствует.
 
 **Проверка:**
 

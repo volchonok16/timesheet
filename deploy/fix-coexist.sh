@@ -76,16 +76,34 @@ else
   fi
 fi
 
+DOMAIN="${TIMESHEET_DOMAIN:-mateplace.ru}"
+CERT_MP="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+
 echo "==> 4. Timesheet — только mateplace.conf (31080 / 31573)"
 bash "$ROOT/deploy/deploy.sh"
 
-if [[ ! -f "/etc/letsencrypt/live/${TIMESHEET_DOMAIN:-mateplace.ru}/fullchain.pem" ]]; then
-  echo "!!  Нет SSL mateplace.ru:"
-  echo "    cd $ROOT && sudo bash deploy/deploy.sh --issue-ssl"
+if [[ ! -f "$CERT_MP" ]]; then
+  warn "Нет SSL для ${DOMAIN} — https://${DOMAIN} отдаёт pallink (нет server на 443)."
+  warn "Выпускаем сертификат…"
+  bash "$ROOT/deploy/deploy.sh" --issue-ssl || \
+    warn "certbot не прошёл — DNS A для ${DOMAIN} → IP VPS, порт 80 открыт, затем: sudo bash deploy/deploy.sh --issue-ssl"
 fi
 
 nginx -t
 systemctl reload nginx
+
+echo ""
+echo "==> 5. mateplace не должен редиректить на pallink"
+if grep -q 'listen 443' /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null \
+  && grep -q "server_name ${DOMAIN}" /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null; then
+  echo "    OK: mateplace.conf слушает 443 с server_name ${DOMAIN}"
+else
+  warn "В mateplace.conf нет HTTPS для ${DOMAIN} — снова: sudo bash deploy/deploy.sh --issue-ssl"
+fi
+MP_PASS="$(grep -h 'proxy_pass' /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null || true)"
+if echo "$MP_PASS" | grep -qE ':5173|:32573'; then
+  warn "mateplace проксирует на pallink-порт (5173/32573) — перезапустите fix-coexist"
+fi
 
 echo ""
 echo "==> Проверка upstream"
