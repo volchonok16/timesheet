@@ -247,15 +247,19 @@ check_nginx_multi_site() {
     echo ""
     log "Включённые сайты nginx: $enabled"
   fi
-  if nginx -T 2>/dev/null | grep -E 'listen.*443.*default_server' | grep -qv "server_name ${DOMAIN}"; then
+  # nginx -T пишет дамп в stderr — не использовать 2>/dev/null
+  local nginx_cfg
+  nginx_cfg="$(nginx -T 2>&1 || true)"
+  if echo "$nginx_cfg" | grep -E 'listen.*443.*default_server' | grep -qv "${DOMAIN}"; then
     echo ""
     warn "На 443 есть default_server — https://${DOMAIN} может уходить на pallink.fun."
     warn "Запустите: sudo bash deploy/fix-coexist.sh"
     warn "pallink nginx — только из Ganta (ganta/deploy/nginx/pallink.conf), см. deploy/MULTI-DOMAIN.md"
-    nginx -T 2>/dev/null | grep -E 'listen.*443|server_name|default_server' | head -30 || true
+    echo "$nginx_cfg" | grep -E 'listen.*443|server_name|default_server' | head -30 || true
   fi
   if [[ -f "$CERT_DIR/fullchain.pem" ]] \
-    && ! nginx -T 2>/dev/null | grep -q "server_name ${DOMAIN}"; then
+    && ! echo "$nginx_cfg" | grep -qE "server_name[[:space:]]+.*${DOMAIN}" \
+    && ! grep -qE "server_name[[:space:]]+.*${DOMAIN}" /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null; then
     warn "В nginx нет server_name ${DOMAIN} — проверьте sites-enabled/mateplace.conf"
   fi
 }

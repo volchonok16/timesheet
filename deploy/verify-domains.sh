@@ -24,7 +24,7 @@ fi
 
 echo ""
 echo "=== 3. default_server на 443 ==="
-if nginx -T 2>/dev/null | grep -E 'listen.*443.*default_server'; then
+if nginx -T 2>&1 | grep -E 'listen.*443.*default_server'; then
   echo "WARN есть default_server — уберите: sudo bash deploy/fix-coexist.sh"
 else
   echo "OK  явного default_server на 443 нет"
