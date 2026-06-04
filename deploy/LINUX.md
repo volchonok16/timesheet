@@ -145,6 +145,20 @@ nginx (системный)
 
 ## 7. Типичные проблемы
 
+**`The repository 'https://docker.com noble Release' does not have a Release file`**
+
+На сервере добавлен неверный apt-репозиторий (`docker.com` вместо официального). Исправление:
+
+```bash
+sudo grep -r docker.com /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null
+sudo rm -f /etc/apt/sources.list.d/docker.list
+sudo sed -i '/docker\.com/d' /etc/apt/sources.list.d/*.list 2>/dev/null
+sudo apt-get update
+```
+
+Затем снова: `sudo bash deploy/deploy.sh --bootstrap`  
+(скрипт `deploy.sh` тоже пытается убрать этот репозиторий автоматически.)
+
 **certbot: connection refused** — DNS ещё не обновился или закрыт порт 80. Проверьте: `dig +short your-domain.ru`.
 
 **502 Bad Gateway** — контейнеры не поднялись: `docker compose ... ps` и `logs backend`.

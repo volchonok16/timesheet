@@ -107,11 +107,38 @@ patch_env_domains() {
   rm -f "$tmp"
 }
 
+fix_broken_apt_sources() {
+  # На VPS иногда добавляют https://docker.com (неверно) вместо download.docker.com
+  local f
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+    [[ -f "$f" ]] || continue
+    if grep -qE 'https?://docker\.com' "$f" 2>/dev/null; then
+      warn "Удаляем неверный репозиторий docker.com из $f"
+      sed -i '/docker\.com/d' "$f"
+    fi
+  done
+  if [[ -f /etc/apt/sources.list.d/docker.list ]] \
+    && grep -qE 'docker\.com' /etc/apt/sources.list.d/docker.list 2>/dev/null; then
+    warn "Удаляем /etc/apt/sources.list.d/docker.list (битый URL)"
+    rm -f /etc/apt/sources.list.d/docker.list
+  fi
+}
+
+apt_update_safe() {
+  export DEBIAN_FRONTEND=noninteractive
+  fix_broken_apt_sources
+  if apt-get update -qq; then
+    return 0
+  fi
+  warn "apt-get update не удался — повтор после очистки источников…"
+  fix_broken_apt_sources
+  apt-get update -qq || die "apt-get update не работает. Проверьте /etc/apt/sources.list.d/ (см. deploy/LINUX.md)."
+}
+
 install_bootstrap_packages() {
   need_root_for_nginx
   log "Установка базовых пакетов (apt)…"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
+  apt_update_safe
   apt-get install -y -qq ca-certificates curl git nginx
 }
 
@@ -121,9 +148,9 @@ install_docker() {
     return
   fi
   need_root_for_nginx
-  log "Установка Docker…"
+  log "Установка Docker (пакеты Ubuntu: docker.io)…"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
+  apt_update_safe
   apt-get install -y -qq ca-certificates curl gnupg
   if ! command -v docker >/dev/null 2>&1; then
     apt-get install -y -qq docker.io docker-compose-v2 2>/dev/null \
