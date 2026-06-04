@@ -135,6 +135,7 @@ def auth_status(auth: TfsAuth = Depends(require_tfs_auth)) -> AuthStatusOut:
         authenticated=True,
         tfs_display_name=auth.tfs_display_name,
         tfs_unique_name=auth.tfs_unique_name,
+        oscar_sync_enabled=bool(settings.oscar_sync_enabled and settings.oscar_api_base_url),
     )
 
 

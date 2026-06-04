@@ -172,7 +172,7 @@ def _strong_identity_tokens(blob: Any) -> set[str]:
     if not isinstance(blob, dict):
         return set()
     tokens: set[str] = set()
-    for key in ("uniqueName", "descriptor", "id", "mailAddress", "emailAddress"):
+    for key in ("uniqueName", "name", "descriptor", "id", "mailAddress", "emailAddress"):
         raw = blob.get(key)
         if raw:
             tokens.add(str(raw).casefold().strip())
@@ -523,7 +523,20 @@ async def sync_time_from_tfs(
     force: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.oscar_sync import sync_time_from_oscar
+
     end = period_end(period_start, view)
+    if force or should_run_sync(db, auth, period_start=period_start, view=view, force=force):
+        oscar_payload = await sync_time_from_oscar(
+            db, auth, period_start=period_start, view=view, force=force
+        )
+        if oscar_payload is not None and int(oscar_payload.get("imported") or 0) > 0:
+            if session_id and auth.tfs_unique_name:
+                from app.auth_sessions import update_session
+
+                update_session(session_id, auth)
+            return oscar_payload
+
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
         return {
             "imported": 0,
@@ -729,4 +742,5 @@ async def sync_time_from_tfs(
         "period_start": period_start,
         "period_end": end,
         "cached": False,
+        "source": "tfs",
     }

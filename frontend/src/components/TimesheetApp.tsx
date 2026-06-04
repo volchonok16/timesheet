@@ -24,7 +24,7 @@ import WeekGrid from './WeekGrid'
 const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
 const BACKGROUND_SYNC_DELAY_MS = 45 * 1000
 const REPAIR_DELAY_MS = 12 * 1000
-const DATA_REPAIR_KEY = 'timesheet-data-repair-v5'
+const DATA_REPAIR_KEY = 'timesheet-data-repair-v6'
 
 type Props = {
   onLogout: () => void

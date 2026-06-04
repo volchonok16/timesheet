@@ -45,6 +45,7 @@ class AuthStatusOut(ApiModel):
     authenticated: bool
     tfs_display_name: str | None = None
     tfs_unique_name: str | None = None
+    oscar_sync_enabled: bool = False
 
 
 class WorkItemOut(ApiModel):
@@ -174,6 +175,8 @@ class TimesheetSyncOut(ApiModel):
     period_start: date
     period_end: date
     cached: bool = False
+    source: str | None = None
+    message: str | None = None
 
 
 class RecentEntryOut(ApiModel):

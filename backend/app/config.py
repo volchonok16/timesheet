@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     tfs_sync_ttl_seconds: int = Field(default=600, alias="TFS_SYNC_TTL_SECONDS")
     tfs_sync_update_lookback_days: int = Field(default=21, alias="TFS_SYNC_UPDATE_LOOKBACK_DAYS")
 
+    oscar_api_base_url: str | None = Field(
+        default="https://oscar.k8s-mn.ds.t2.ru",
+        alias="OSCAR_API_BASE_URL",
+    )
+    oscar_sync_enabled: bool = Field(default=True, alias="OSCAR_SYNC_ENABLED")
+
     task_type_name: str = Field(default="Задача", alias="TFS_TASK_TYPE")
     requirement_type_name: str = Field(default="Требование", alias="TFS_REQUIREMENT_TYPE")
     change_request_type_name: str = Field(default="Запрос на изменение", alias="TFS_CHANGE_REQUEST_TYPE")
