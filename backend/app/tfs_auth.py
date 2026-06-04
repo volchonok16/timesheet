@@ -83,13 +83,17 @@ class TfsAuth:
     def identity_match_tokens(self) -> set[str]:
         tokens = self.tfs_identity().match_tokens()
         if self.username:
-            user = self.username.casefold().strip()
-            if user:
-                tokens.add(user)
-                if "\\" in user:
-                    tokens.add(user.split("\\")[-1])
-                if "@" in user:
-                    tokens.add(user.split("@")[0])
+            from app.http_auth import expand_login_usernames
+
+            for candidate in expand_login_usernames(self.username, self.domain):
+                value = candidate.casefold().strip()
+                if not value:
+                    continue
+                tokens.add(value)
+                if "\\" in value:
+                    tokens.add(value.split("\\")[-1])
+                if "@" in value:
+                    tokens.add(value.split("@")[0])
         return tokens
 
     def has_credentials(self) -> bool:

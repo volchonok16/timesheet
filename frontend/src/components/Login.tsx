@@ -60,7 +60,7 @@ export default function Login({ onSuccess }: LoginProps) {
       return
     }
     if (mode === 'token' && (!body.pat || !body.username)) {
-      setError('Введите логин TFS (email) и токен PAT.')
+      setError('Введите логин TFS (как AD_UserID в «Время») и токен PAT.')
       setLoading(false)
       return
     }
@@ -139,7 +139,7 @@ export default function Login({ onSuccess }: LoginProps) {
                 <input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="user@t2.ru или TELE2\\user"
+                  placeholder="user@t2.ru или T2RU\\user (как в TFS «Время»)"
                   autoComplete="username"
                   required
                 />

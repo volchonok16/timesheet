@@ -104,26 +104,39 @@ def parse_list_delta_payload(
     return rows
 
 
+def _ad_account_tails(value: str) -> set[str]:
+    """Хвост логина AD (после домена) или локальная часть email — для сопоставления с ListDelta."""
+    raw = value.casefold().strip()
+    if not raw:
+        return set()
+    tails = {raw}
+    if "\\" in raw:
+        tails.add(raw.split("\\")[-1])
+    if "@" in raw:
+        tails.add(raw.split("@")[0])
+    return {item for item in tails if len(item) >= 3}
+
+
 def delta_user_matches_auth(delta_user: str, auth: TfsAuth) -> bool:
+    """
+    Строка ListDelta (AD_UserID) только для текущей сессии.
+    Другой пользователь с тем же PAT не увидит чужие часы: у него другие tokens.
+    """
     needle = delta_user.casefold().strip()
     if not needle:
         return False
     tokens = auth.identity_match_tokens()
+    if not tokens:
+        return False
     if needle in tokens:
         return True
-    needle_tail = needle.split("\\")[-1] if "\\" in needle else needle
-    needle_local = needle.split("@")[0] if "@" in needle else needle_tail
-    if needle_tail in tokens or needle_local in tokens:
-        return True
+    needle_tails = _ad_account_tails(needle)
+    if not needle_tails:
+        return False
+    auth_tails: set[str] = set()
     for token in tokens:
-        if "\\" in token and token.split("\\")[-1] == needle_tail:
-            return True
-        if "@" in token and token.split("@")[0] == needle_local:
-            return True
-    login = (auth.tfs_unique_name or auth.username or "").casefold().strip()
-    if login and (login == needle or login.endswith(f"\\{needle_tail}")):
-        return True
-    return False
+        auth_tails |= _ad_account_tails(token)
+    return bool(needle_tails & auth_tails)
 
 
 class TfsTsapiClient:

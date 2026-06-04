@@ -59,7 +59,7 @@ def test_parse_period_date_dmY() -> None:
     assert rows[0].period_date == date(2026, 6, 5)
 
 
-def test_delta_user_matches_auth() -> None:
+def test_delta_user_matches_pat_with_tfs_unique_name() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
@@ -67,13 +67,35 @@ def test_delta_user_matches_auth() -> None:
         tfs_unique_name="T2RU\\alexander.taraskin",
     )
     assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
-    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
 
 
-def test_delta_user_matches_login_only() -> None:
+def test_delta_user_matches_login_domain_alias() -> None:
+    """Вход TELE2\\user, в ListDelta — T2RU\\user (тот же человек)."""
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
         username="TELE2\\alexander.taraskin",
     )
     assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+
+
+def test_delta_user_matches_email_expands_t2ru() -> None:
+    auth = TfsAuth(
+        base_url="https://tfs.t2.ru/tfs/Main",
+        project="Tele2",
+        username="alexander.taraskin@t2.ru",
+    )
+    tokens = auth.identity_match_tokens()
+    assert "t2ru\\alexander.taraskin" in tokens
+    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+
+
+def test_delta_user_rejects_other_user() -> None:
+    auth = TfsAuth(
+        base_url="https://tfs.t2.ru/tfs/Main",
+        project="Tele2",
+        username="ivanov@t2.ru",
+        tfs_unique_name="T2RU\\ivanov",
+    )
+    assert not delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+    assert delta_user_matches_auth("T2RU\\ivanov", auth)

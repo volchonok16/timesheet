@@ -6,8 +6,9 @@ from typing import Any
 from app.tfs_auth import TfsAuth
 
 EMAIL_HOST_AD_DOMAINS: dict[str, list[str]] = {
-    "t2.ru": ["TELE2", "T2"],
-    "tele2.ru": ["TELE2"],
+    # В ListDelta TFS часто AD_UserID = T2RU\user, в форме входа — TELE2\user или email.
+    "t2.ru": ["TELE2", "T2", "T2RU"],
+    "tele2.ru": ["TELE2", "T2RU"],
 }
 
 
