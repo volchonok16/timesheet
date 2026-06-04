@@ -17,6 +17,7 @@ from app.tfs_client import TfsClient
 from app.time_service import (
     ROLE_LABELS,
     list_recent,
+    owner_unique_name_for,
     parse_tracking_title,
     period_end,
     timesheet_parent_ids,
@@ -118,21 +119,7 @@ def parse_update_time_slices(
             )
         )
 
-    if slices:
-        return slices
-
-    delta = _completed_work_delta(fields)
-    if delta is None:
-        return []
-
-    return [
-        ParsedTimeSlice(
-            entry_date=revised_date,
-            hours=delta,
-            comment="Импорт из TFS (Completed Work)",
-            sync_key=f"tfs:{tracking_work_item_id}:rev{rev}:cw",
-        )
-    ]
+    return slices
 
 
 def as_update_fields(update: dict[str, Any]) -> dict[str, Any]:
@@ -156,7 +143,15 @@ def _identity_tokens_from_blob(blob: Any) -> set[str]:
     tokens: set[str] = set()
     if not isinstance(blob, dict):
         return tokens
-    for key in ("displayName", "uniqueName", "name", "descriptor", "mailAddress", "emailAddress"):
+    for key in (
+        "id",
+        "displayName",
+        "uniqueName",
+        "name",
+        "descriptor",
+        "mailAddress",
+        "emailAddress",
+    ):
         raw = blob.get(key)
         if raw:
             tokens.add(str(raw).casefold())
@@ -166,8 +161,21 @@ def _identity_tokens_from_blob(blob: Any) -> set[str]:
     return tokens
 
 
+def _strong_identity_tokens(blob: Any) -> set[str]:
+    if not isinstance(blob, dict):
+        return set()
+    tokens: set[str] = set()
+    for key in ("uniqueName", "descriptor", "id", "mailAddress", "emailAddress"):
+        raw = blob.get(key)
+        if raw:
+            tokens.add(str(raw).casefold().strip())
+    id_ref = blob.get("identityRef")
+    if isinstance(id_ref, dict):
+        tokens |= _strong_identity_tokens(id_ref)
+    return tokens
+
+
 def _tokens_match(author_tokens: set[str], current_user_tokens: set[str]) -> bool:
-    """Точное совпадение идентификаторов (без подстрок вроде petrov ⊂ petrovski)."""
     if not author_tokens or not current_user_tokens:
         return False
     return bool(author_tokens & current_user_tokens)
@@ -177,25 +185,60 @@ def update_revised_by_current_user(
     update: dict[str, Any],
     *,
     current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
 ) -> bool:
-    """Только ревизии текущего пользователя (сопоставление с PAT/connectionData)."""
-    if not current_user_tokens:
+    """Только ревизии владельца PAT (uniqueName / descriptor / id)."""
+    if not current_user_strong_tokens and not current_user_tokens:
         return False
-    author_tokens = _identity_tokens_from_blob(update.get("revisedBy"))
-    if not author_tokens:
-        return False
+    author = update.get("revisedBy")
+    author_strong = _strong_identity_tokens(author)
+    if author_strong and current_user_strong_tokens:
+        return bool(author_strong & current_user_strong_tokens)
+    author_tokens = _identity_tokens_from_blob(author)
     return _tokens_match(author_tokens, current_user_tokens)
 
 
-async def resolve_current_user_tokens(client: TfsClient, auth: TfsAuth) -> set[str]:
-    """Токены идентичности: из сессии (после входа по PAT) или connectionData."""
+def assignee_tokens_from_fields(fields: dict[str, Any]) -> set[str]:
+    raw = fields.get("System.AssignedTo")
+    if isinstance(raw, dict):
+        return _identity_tokens_from_blob(raw)
+    if isinstance(raw, str) and raw.strip():
+        name = raw.split("<")[0].strip() if "<" in raw else raw.strip()
+        return {name.casefold()} if name else set()
+    return set()
+
+
+def work_item_assigned_to_current_user(
+    fields: dict[str, Any],
+    *,
+    current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
+) -> bool:
+    """Дочерняя «Роль — активность» должна быть назначена на текущего пользователя."""
+    raw_assignee = fields.get("System.AssignedTo")
+    assignee_strong = (
+        _strong_identity_tokens(raw_assignee) if isinstance(raw_assignee, dict) else set()
+    )
+    assignee_tokens = assignee_tokens_from_fields(fields)
+    if not assignee_tokens and not assignee_strong:
+        return True
+    if assignee_strong and current_user_strong_tokens:
+        return bool(assignee_strong & current_user_strong_tokens)
+    return _tokens_match(assignee_tokens, current_user_tokens)
+
+
+async def resolve_current_user_tokens(
+    client: TfsClient, auth: TfsAuth
+) -> tuple[set[str], set[str]]:
+    """(полные токены, надёжные uniqueName/descriptor/id) из сессии или connectionData."""
+    strong = auth.identity_strong_tokens()
     tokens = auth.identity_match_tokens()
-    if tokens:
-        return tokens
+    if strong or tokens:
+        return tokens, strong
     identity = await client.get_authenticated_user_identity()
     if identity:
-        return identity.match_tokens()
-    return set()
+        return identity.match_tokens(), identity.strong_tokens()
+    return set(), set()
 
 
 def filter_updates_for_sync(
@@ -203,20 +246,23 @@ def filter_updates_for_sync(
     *,
     period_start: date,
     current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
 ) -> list[dict[str, Any]]:
-    """Релевантные ревизии периода, только от текущего пользователя."""
+    """Релевантные ревизии периода: только автор PAT и строки истории списаний."""
     cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
     filtered: list[dict[str, Any]] = []
     for update in updates:
         if not update_revised_by_current_user(
-            update, current_user_tokens=current_user_tokens
+            update,
+            current_user_tokens=current_user_tokens,
+            current_user_strong_tokens=current_user_strong_tokens,
         ):
             continue
         revised = _parse_revised_date(update.get("revisedDate"))
         if revised < cutoff:
             continue
         fields = as_update_fields(update)
-        if "Microsoft.VSTS.Scheduling.CompletedWork" in fields or "System.History" in fields:
+        if "System.History" in fields:
             filtered.append(update)
     return filtered
 
@@ -227,12 +273,14 @@ def aggregate_slices_for_task(
     tracking_work_item_id: int,
     period_start: date,
     current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
 ) -> list[ParsedTimeSlice]:
     merged: list[ParsedTimeSlice] = []
     for update in filter_updates_for_sync(
         updates,
         period_start=period_start,
         current_user_tokens=current_user_tokens,
+        current_user_strong_tokens=current_user_strong_tokens,
     ):
         merged.extend(
             parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
@@ -355,6 +403,8 @@ async def collect_tracking_targets(
     period_start: date,
     view: str,
     include_wiql: bool,
+    current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
 ) -> list[TrackingTarget]:
     seen: set[int] = set()
     targets: list[TrackingTarget] = []
@@ -395,11 +445,19 @@ async def collect_tracking_targets(
             for child in children:
                 if not is_tracking_child_item(child):
                     continue
+                child_fields = {"System.AssignedTo": child.get("assignedTo")}
+                if not work_item_assigned_to_current_user(
+                    child_fields,
+                    current_user_tokens=current_user_tokens,
+                    current_user_strong_tokens=current_user_strong_tokens,
+                ):
+                    continue
                 add(int(child["id"]), parent_id)
 
-    if include_wiql:
+    if include_wiql and auth.tfs_unique_name:
         lookback = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
-        wiql_ids = await client.find_task_ids_with_completed_work(
+        wiql_ids = await client.find_task_ids_changed_by_user(
+            unique_name=auth.tfs_unique_name,
             changed_since=lookback,
             limit=settings.tfs_sync_max_tasks,
         )
@@ -440,16 +498,18 @@ async def sync_time_from_tfs(
     parents_touched: set[int] = set()
 
     try:
-        user_tokens = await resolve_current_user_tokens(client, auth)
+        user_tokens, user_strong_tokens = await resolve_current_user_tokens(client, auth)
         if not auth.tfs_unique_name:
             identity = await client.get_authenticated_user_identity()
             if identity:
                 auth = attach_tfs_identity(auth, identity)
                 user_tokens = auth.identity_match_tokens()
-        if not user_tokens:
+                user_strong_tokens = auth.identity_strong_tokens()
+        if not user_strong_tokens and not user_tokens:
             raise ValueError(
                 "Не удалось определить пользователя TFS по PAT. Выйдите и войдите снова."
             )
+        owner_key = owner_unique_name_for(auth)
         if force:
             purged = purge_all_imported_tfs_entries(db, auth)
         else:
@@ -466,6 +526,8 @@ async def sync_time_from_tfs(
             period_start=period_start,
             view=view,
             include_wiql=force,
+            current_user_tokens=user_tokens,
+            current_user_strong_tokens=user_strong_tokens,
         )
         local_tracking_ids = db.scalars(
             select(TimeEntry.tracking_work_item_id, TimeEntry.parent_work_item_id)
@@ -534,6 +596,13 @@ async def sync_time_from_tfs(
                     return 0, 1
 
                 fields = task_item.get("fields") or {}
+                if not work_item_assigned_to_current_user(
+                    fields,
+                    current_user_tokens=user_tokens,
+                    current_user_strong_tokens=user_strong_tokens,
+                ):
+                    return 0, 1
+
                 title = str(fields.get("System.Title") or f"#{task_id}")
                 role, activity = parse_tracking_title(title)
                 if not role:
@@ -554,6 +623,7 @@ async def sync_time_from_tfs(
                     tracking_work_item_id=task_id,
                     period_start=period_start,
                     current_user_tokens=user_tokens,
+                    current_user_strong_tokens=user_strong_tokens,
                 ):
                     if not entry_in_period(
                         slice_.entry_date, period_start=period_start, period_end=end
@@ -575,6 +645,7 @@ async def sync_time_from_tfs(
                             comment=slice_.comment,
                             cost_project=cost_project,
                             tfs_sync_key=slice_.sync_key,
+                            owner_unique_name=owner_key,
                         )
                     )
                     existing_keys.add(slice_.sync_key)

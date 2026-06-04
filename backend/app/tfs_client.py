@@ -255,6 +255,37 @@ class TfsClient:
                 continue
         return None
 
+    async def find_task_ids_changed_by_user(
+        self,
+        *,
+        unique_name: str,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        """Задачи, которые менял текущий пользователь (как поток Oscar — только свои)."""
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        user = wiql_quote(unique_name.strip())
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [System.ChangedBy] = {user} "
+            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        payload = await self.run_wiql(wiql)
+        ids: list[int] = []
+        for item in as_list(payload.get("workItems")):
+            if not isinstance(item, dict):
+                continue
+            try:
+                ids.append(int(item["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if len(ids) >= limit:
+                break
+        return ids
+
     async def find_task_ids_with_completed_work(
         self,
         *,
@@ -297,7 +328,10 @@ class TfsClient:
                 continue
         if not child_ids:
             return []
-        items = await self.get_work_items_batch(child_ids)
+        items = await self.get_work_items_batch(
+            child_ids,
+            fields=["System.Id", "System.Title", "System.State", "System.AssignedTo", "System.WorkItemType", "System.AreaPath"],
+        )
         return [self.normalize_item(item) for item in items]
 
     async def find_child_task(self, parent_id: int, title: str) -> dict[str, Any] | None:
@@ -755,6 +789,7 @@ class TfsClient:
             "areaPath": fields.get("System.AreaPath", ""),
             "teamProject": fields.get("System.TeamProject", self.project),
             "completedWork": fields.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0,
+            "assignedTo": fields.get("System.AssignedTo"),
             "tfsUrl": self.work_item_url(int(item.get("id") or fields.get("System.Id") or 0)),
             "kind": self.item_kind(work_item_type),
         }

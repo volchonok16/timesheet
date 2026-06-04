@@ -27,6 +27,7 @@ class TimeEntry(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     cost_project: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tfs_sync_key: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    owner_unique_name: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

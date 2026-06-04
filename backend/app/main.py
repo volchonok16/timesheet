@@ -79,6 +79,11 @@ def startup() -> None:
         )
         conn.execute(
             text(
+                "ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS owner_unique_name VARCHAR(256)"
+            )
+        )
+        conn.execute(
+            text(
                 "CREATE TABLE IF NOT EXISTS auth_sessions ("
                 "session_id VARCHAR(64) PRIMARY KEY, "
                 "payload TEXT NOT NULL, "

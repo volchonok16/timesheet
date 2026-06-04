@@ -14,6 +14,17 @@ class TfsIdentity:
     identity_id: str | None = None
     email: str | None = None
 
+    def strong_tokens(self) -> set[str]:
+        """Надёжные идентификаторы PAT (без displayName — он совпадает у разных людей)."""
+        tokens: set[str] = set()
+        for raw in (self.unique_name, self.descriptor, self.identity_id, self.email):
+            if not raw:
+                continue
+            value = str(raw).casefold().strip()
+            if value:
+                tokens.add(value)
+        return tokens
+
     def match_tokens(self) -> set[str]:
         tokens: set[str] = set()
         for raw in (
@@ -60,6 +71,14 @@ class TfsAuth:
             identity_id=self.tfs_identity_id,
             email=self.tfs_email,
         )
+
+    def identity_strong_tokens(self) -> set[str]:
+        tokens = self.tfs_identity().strong_tokens()
+        if self.username:
+            user = self.username.casefold().strip()
+            if user:
+                tokens.add(user)
+        return tokens
 
     def identity_match_tokens(self) -> set[str]:
         tokens = self.tfs_identity().match_tokens()

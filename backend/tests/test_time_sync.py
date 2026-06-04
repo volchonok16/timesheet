@@ -7,6 +7,7 @@ from app.time_sync import (
     filter_updates_for_sync,
     parse_update_time_slices,
     update_revised_by_current_user,
+    work_item_assigned_to_current_user,
 )
 
 
@@ -16,20 +17,24 @@ def _update_with_author(
     revised_date: str,
     author_display: str,
     author_unique: str,
+    author_id: str = "user-guid-petrov",
+    descriptor: str = "aad.U-petrov",
     fields: dict,
 ) -> dict:
     return {
         "rev": rev,
         "revisedDate": revised_date,
         "revisedBy": {
+            "id": author_id,
             "displayName": author_display,
             "uniqueName": author_unique,
+            "descriptor": descriptor,
         },
         "fields": fields,
     }
 
 
-def _pat_user_tokens() -> set[str]:
+def _pat_user_token_sets() -> tuple[set[str], set[str]]:
     auth = attach_tfs_identity(
         TfsAuth(
             base_url="https://tfs.example/tfs/Main",
@@ -42,9 +47,10 @@ def _pat_user_tokens() -> set[str]:
             display_name="Петров Пётр",
             unique_name="MAIN\\petrov",
             descriptor="aad.U-petrov",
+            identity_id="user-guid-petrov",
         ),
     )
-    return auth.identity_match_tokens()
+    return auth.identity_match_tokens(), auth.identity_strong_tokens()
 
 
 def test_parse_history_lines() -> None:
@@ -64,8 +70,29 @@ def test_parse_history_lines() -> None:
     assert slices[0].hours == 2.0
 
 
+def test_completed_work_not_imported() -> None:
+    tokens, strong = _pat_user_token_sets()
+    update = _update_with_author(
+        rev=1,
+        revised_date="2026-06-04T00:00:00Z",
+        author_display="Петров Пётр",
+        author_unique="MAIN\\petrov",
+        fields={
+            "Microsoft.VSTS.Scheduling.CompletedWork": {"oldValue": 0, "newValue": 100},
+        },
+    )
+    slices = aggregate_slices_for_task(
+        [update],
+        tracking_work_item_id=1,
+        period_start=date(2026, 6, 1),
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
+    )
+    assert slices == []
+
+
 def test_only_current_user_revisions_imported() -> None:
-    tokens = _pat_user_tokens()
+    tokens, strong = _pat_user_token_sets()
     mine = _update_with_author(
         rev=1,
         revised_date="2026-06-03T10:00:00Z",
@@ -78,6 +105,8 @@ def test_only_current_user_revisions_imported() -> None:
         revised_date="2026-06-03T11:00:00Z",
         author_display="Сидоров Сидор",
         author_unique="MAIN\\sidorov",
+        author_id="user-guid-sidorov",
+        descriptor="aad.U-sidorov",
         fields={"System.History": {"newValue": "2026-06-03: +100ч — чужое"}},
     )
     slices = aggregate_slices_for_task(
@@ -85,13 +114,14 @@ def test_only_current_user_revisions_imported() -> None:
         tracking_work_item_id=1,
         period_start=date(2026, 6, 1),
         current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
     )
     assert len(slices) == 1
     assert slices[0].hours == 4.0
 
 
 def test_update_revised_by_match_unique_name_from_pat() -> None:
-    tokens = _pat_user_tokens()
+    tokens, strong = _pat_user_token_sets()
     update = _update_with_author(
         rev=1,
         revised_date="2026-06-04T00:00:00Z",
@@ -99,9 +129,30 @@ def test_update_revised_by_match_unique_name_from_pat() -> None:
         author_unique="MAIN\\petrov",
         fields={},
     )
-    assert update_revised_by_current_user(update, current_user_tokens=tokens)
+    assert update_revised_by_current_user(
+        update,
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
+    )
     assert not update_revised_by_current_user(
-        update, current_user_tokens={"main\\sidorov"}
+        update,
+        current_user_tokens={"main\\sidorov"},
+        current_user_strong_tokens={"main\\sidorov"},
+    )
+
+
+def test_assigned_to_other_user_skipped() -> None:
+    tokens, strong = _pat_user_token_sets()
+    fields = {
+        "System.AssignedTo": {
+            "uniqueName": "MAIN\\sidorov",
+            "displayName": "Сидоров",
+        },
+    }
+    assert not work_item_assigned_to_current_user(
+        fields,
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
     )
 
 
@@ -119,20 +170,8 @@ def test_history_increment_skips_previous_lines() -> None:
     assert _history_increment_text(fields) == "2026-06-03: +3ч — новое"
 
 
-def test_tokens_do_not_match_by_substring() -> None:
-    tokens = _pat_user_tokens()
-    update = _update_with_author(
-        rev=1,
-        revised_date="2026-06-04T00:00:00Z",
-        author_display="Петровский Иван",
-        author_unique="MAIN\\petrovski",
-        fields={},
-    )
-    assert not update_revised_by_current_user(update, current_user_tokens=tokens)
-
-
 def test_filter_updates_skips_old_revisions() -> None:
-    tokens = _pat_user_tokens()
+    tokens, strong = _pat_user_token_sets()
     updates = [
         {"revisedDate": "2020-01-01T00:00:00Z", "revisedBy": {"displayName": "A"}, "fields": {}},
         _update_with_author(
@@ -140,14 +179,13 @@ def test_filter_updates_skips_old_revisions() -> None:
             revised_date="2026-06-04T00:00:00Z",
             author_display="Петров",
             author_unique="MAIN\\petrov",
-            fields={
-                "Microsoft.VSTS.Scheduling.CompletedWork": {"oldValue": 0, "newValue": 1},
-            },
+            fields={"System.History": {"newValue": "2026-06-04: +1ч"}},
         ),
     ]
     filtered = filter_updates_for_sync(
         updates,
         period_start=date(2026, 6, 1),
         current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
     )
     assert len(filtered) == 1

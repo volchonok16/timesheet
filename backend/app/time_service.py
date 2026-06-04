@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.activities import ACTIVITIES
@@ -90,6 +90,36 @@ def period_end(start: date, view: str) -> date:
 
 def total_hours(hours: float, minutes: int) -> float:
     return round(hours + minutes / 60, 2)
+
+
+def owner_unique_name_for(auth: TfsAuth) -> str | None:
+    raw = (auth.tfs_unique_name or auth.username or "").strip()
+    return raw.casefold() if raw else None
+
+
+def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
+    """Ручные списания — свои; импорт из TFS — только с меткой владельца PAT."""
+    if not entry.tfs_sync_key:
+        return True
+    owner = owner_unique_name_for(auth)
+    if not owner or not entry.owner_unique_name:
+        return False
+    return entry.owner_unique_name.casefold() == owner
+
+
+def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[TimeEntry]:
+    return [entry for entry in entries if entry_owned_by_current_user(entry, auth)]
+
+
+def entry_ownership_clause(auth: TfsAuth):
+    """SQL: ручные списания или импорт с owner = текущий PAT."""
+    owner = owner_unique_name_for(auth)
+    if not owner:
+        return TimeEntry.tfs_sync_key.is_(None)
+    return or_(
+        TimeEntry.tfs_sync_key.is_(None),
+        TimeEntry.owner_unique_name == owner,
+    )
 
 
 def parent_items_from_recent(
@@ -399,6 +429,7 @@ async def log_time_entry(
             hours=signed,
             comment=comment,
             cost_project=resolved_cost_project,
+            owner_unique_name=owner_unique_name_for(auth),
         )
         db.add(entry)
         db.commit()
@@ -439,13 +470,18 @@ def build_timesheet(
     children_by_parent: dict[int, list[dict[str, Any]]] | None = None,
 ) -> TimesheetOut:
     end = period_end(period_start, view)
-    entries = db.scalars(
-        select(TimeEntry).where(
-            TimeEntry.account_key == auth.account_key,
-            TimeEntry.entry_date >= period_start,
-            TimeEntry.entry_date <= end,
-        )
-    ).all()
+    entries = filter_entries_for_user(
+        list(
+            db.scalars(
+                select(TimeEntry).where(
+                    TimeEntry.account_key == auth.account_key,
+                    TimeEntry.entry_date >= period_start,
+                    TimeEntry.entry_date <= end,
+                )
+            ).all()
+        ),
+        auth,
+    )
 
     by_parent: dict[int, list[TimeEntry]] = defaultdict(list)
     for entry in entries:
@@ -571,6 +607,7 @@ def build_calendar_month(db: Session, auth: TfsAuth, *, year: int, month: int) -
             TimeEntry.account_key == auth.account_key,
             TimeEntry.entry_date >= start,
             TimeEntry.entry_date <= end,
+            entry_ownership_clause(auth),
         )
         .group_by(TimeEntry.entry_date)
     ).all()
@@ -641,11 +678,13 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
     start = week_start(today)
     end = start + timedelta(days=6)
 
+    ownership = entry_ownership_clause(auth)
     today_hours = float(
         db.scalar(
             select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
                 TimeEntry.account_key == auth.account_key,
                 TimeEntry.entry_date == today,
+                ownership,
             )
         )
         or 0
@@ -656,6 +695,7 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
                 TimeEntry.account_key == auth.account_key,
                 TimeEntry.entry_date >= start,
                 TimeEntry.entry_date <= end,
+                ownership,
             )
         )
         or 0
@@ -674,7 +714,10 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
 def list_recent_entries(db: Session, auth: TfsAuth, *, limit: int = 8) -> list[dict[str, Any]]:
     rows = db.scalars(
         select(TimeEntry)
-        .where(TimeEntry.account_key == auth.account_key)
+        .where(
+            TimeEntry.account_key == auth.account_key,
+            entry_ownership_clause(auth),
+        )
         .order_by(desc(TimeEntry.created_at))
         .limit(limit)
     ).all()
