@@ -11,9 +11,9 @@ cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Откройте **http://localhost:8080** и войдите в TFS.
+Откройте **http://localhost:18080** и войдите в TFS.
 
-Nginx в Docker проксирует frontend (`/`) и API (`/api`). Postgres на хосте: `localhost:5433`.
+Nginx в Docker проксирует frontend (`/`) и API (`/api`). Postgres на хосте: `localhost:15433`.
 
 Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [deploy/LINUX.md](deploy/LINUX.md) и [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
@@ -31,10 +31,10 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 
 | Сервис   | Стек              | Доступ (dev)        |
 |----------|-------------------|---------------------|
-| nginx    | nginx:alpine      | http://localhost:8080 |
+| nginx    | nginx:alpine      | http://localhost:18080 |
 | frontend | React + TS + Vite | через nginx         |
 | backend  | FastAPI + httpx   | через nginx `/api`  |
-| postgres | PostgreSQL 16     | localhost:5433      |
+| postgres | PostgreSQL 16     | localhost:15433     |
 
 ## API (основное)
 

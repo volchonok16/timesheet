@@ -46,7 +46,7 @@ sudo bash deploy/deploy.sh --bootstrap
 Проверка без SSL:
 
 ```bash
-curl -s http://127.0.0.1:8000/api/health
+curl -s http://127.0.0.1:18080/api/health
 ```
 
 ---
@@ -135,8 +135,8 @@ sudo certbot renew --dry-run
 Интернет :443/:80
     ↓
 nginx (системный)
-    ├─ https://domain/      → 127.0.0.1:5173 (frontend, Vite dev в prod compose)
-    └─ https://api.domain/  → 127.0.0.1:8000 (FastAPI)
+    ├─ https://domain/      → 127.0.0.1:15173 (frontend, Vite в prod compose)
+    └─ https://api.domain/  → 127.0.0.1:18080 (FastAPI)
                               ↓
                          postgres (только Docker-сеть)
 ```
@@ -159,16 +159,16 @@ sudo apt-get update
 Затем снова: `sudo bash deploy/deploy.sh --bootstrap`  
 (скрипт `deploy.sh` тоже пытается убрать этот репозиторий автоматически.)
 
-**`Bind for 127.0.0.1:8000 failed: port is already allocated`**
+**`Bind for 127.0.0.1:… failed: port is already allocated`**
 
-Порт занят старым контейнером (часто после запуска из папки `prog`):
+Порт занят старым контейнером (часто после запуска из папки `prog` или старых портов 8000/5173):
 
 ```bash
 cd /var/www/timesheet
 docker compose -f docker-compose.yml -f docker-compose.prod.yml down
 docker compose -p prog -f docker-compose.yml -f docker-compose.prod.yml down 2>/dev/null || true
-docker ps --format '{{.Names}} {{.Ports}}' | grep -E '8000|5173'
-sudo ss -tlnp | grep -E ':8000|:5173'
+docker ps --format '{{.Names}} {{.Ports}}' | grep -E '18080|15173|8000|5173'
+sudo ss -tlnp | grep -E ':18080|:15173|:8000|:5173'
 # остановить лишний контейнер:
 docker stop <ID_из_docker_ps>
 sudo bash deploy/deploy.sh

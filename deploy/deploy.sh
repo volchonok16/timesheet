@@ -188,7 +188,7 @@ git_pull_if_requested() {
 }
 
 stop_compose_port_conflicts() {
-  # Старый стек из папки prog или повторный up без down занимает :8000 / :5173
+  # Старый стек или прежние порты :8000 / :5173 могут мешать :18080 / :15173
   local project
   for project in timesheet prog; do
     if docker compose -p "$project" -f docker-compose.yml -f docker-compose.prod.yml ps -q 2>/dev/null | grep -q .; then
@@ -197,7 +197,7 @@ stop_compose_port_conflicts() {
     fi
   done
   local id port
-  for port in 8000 5173; do
+  for port in 18080 15173 8000 5173; do
     for id in $(docker ps -q --filter "publish=127.0.0.1:${port}" 2>/dev/null); do
       warn "Порт ${port} занят контейнером ${id} — останавливаем"
       docker stop "$id" 2>/dev/null || true
@@ -286,13 +286,13 @@ wait_for_health() {
   log "Проверка backend (до 30 с)…"
   local i code
   for i in $(seq 1 15); do
-    if curl -sf http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
-      echo "OK: $(curl -sf http://127.0.0.1:8000/api/health)"
+    if curl -sf http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
+      echo "OK: $(curl -sf http://127.0.0.1:18080/api/health)"
       return 0
     fi
     sleep 2
   done
-  warn "backend не отвечает на :8000 — смотрите: ${COMPOSE[*]} logs backend"
+  warn "backend не отвечает на :18080 — смотрите: ${COMPOSE[*]} logs backend"
 }
 
 print_summary() {
@@ -303,8 +303,8 @@ print_summary() {
 
   wait_for_health
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' http://127.0.0.1:5173/ 2>/dev/null || echo '000')"
-  echo "Frontend :5173 → HTTP $code (ожидается 200)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' http://127.0.0.1:15173/ 2>/dev/null || echo '000')"
+  echo "Frontend :15173 → HTTP $code (ожидается 200)"
 
   if [[ -f "$CERT_DIR/fullchain.pem" ]]; then
     echo ""
