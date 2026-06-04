@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import AccountSyncState, TimeEntry
 from app.auth_sessions import update_session
-from app.tfs_auth import TfsAuth, attach_tfs_identity
+from app.tfs_auth import TfsAuth, attach_tfs_identity, tfs_login_unique_name
+from app.tfs_identity import identity_from_auth_login
 from app.tfs_client import TfsClient
 from app.time_service import (
     ROLE_LABELS,
@@ -348,8 +349,12 @@ async def resolve_current_user_tokens(
     client: TfsClient, auth: TfsAuth
 ) -> tuple[set[str], set[str]]:
     """(полные токены, надёжные uniqueName/descriptor/id) из сессии или connectionData."""
-    strong = auth.identity_strong_tokens()
-    tokens = auth.identity_match_tokens()
+    strong = set(auth.identity_strong_tokens())
+    tokens = set(auth.identity_match_tokens())
+    from_form = identity_from_auth_login(auth)
+    if from_form:
+        strong |= from_form.strong_tokens()
+        tokens |= from_form.match_tokens()
     if strong or tokens:
         return tokens, strong
     identity = await client.get_authenticated_user_identity()
@@ -364,12 +369,13 @@ def filter_updates_for_sync(
     period_start: date,
     current_user_tokens: set[str],
     current_user_strong_tokens: set[str],
+    trust_me_task: bool = False,
 ) -> list[dict[str, Any]]:
     """Релевантные ревизии периода: только автор PAT и изменения часов/истории."""
     cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
     filtered: list[dict[str, Any]] = []
     for update in updates:
-        if not update_revised_by_current_user(
+        if not trust_me_task and not update_revised_by_current_user(
             update,
             current_user_tokens=current_user_tokens,
             current_user_strong_tokens=current_user_strong_tokens,
@@ -391,17 +397,25 @@ def aggregate_slices_for_task(
     period_start: date,
     current_user_tokens: set[str],
     current_user_strong_tokens: set[str],
+    trust_me_task: bool = False,
 ) -> list[ParsedTimeSlice]:
-    merged: list[ParsedTimeSlice] = []
-    for update in filter_updates_for_sync(
-        updates,
-        period_start=period_start,
-        current_user_tokens=current_user_tokens,
-        current_user_strong_tokens=current_user_strong_tokens,
-    ):
-        merged.extend(
-            parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
-        )
+    def _collect(*, trust_author: bool) -> list[ParsedTimeSlice]:
+        slices: list[ParsedTimeSlice] = []
+        for update in filter_updates_for_sync(
+            updates,
+            period_start=period_start,
+            current_user_tokens=current_user_tokens,
+            current_user_strong_tokens=current_user_strong_tokens,
+            trust_me_task=trust_author,
+        ):
+            slices.extend(
+                parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
+            )
+        return slices
+
+    merged = _collect(trust_author=False)
+    if not merged and trust_me_task:
+        merged = _collect(trust_author=True)
     return merged
 
 
@@ -584,22 +598,23 @@ async def collect_tracking_targets(
     wiql_ids: list[int] = []
     if include_wiql:
         wiql_ids.extend(await client.find_tracking_tasks_for_me(changed_since=lookback))
-        if auth.tfs_unique_name:
+        login_name = tfs_login_unique_name(auth)
+        if login_name:
             wiql_ids.extend(
                 await client.find_task_ids_changed_by_user(
-                    unique_name=auth.tfs_unique_name,
+                    unique_name=login_name,
                     changed_since=lookback,
                 )
             )
             wiql_ids.extend(
                 await client.find_tracking_tasks_assigned_to_user(
-                    unique_name=auth.tfs_unique_name,
+                    unique_name=login_name,
                     changed_since=lookback,
                 )
             )
             wiql_ids.extend(
                 await client.find_task_ids_created_by_user(
-                    unique_name=auth.tfs_unique_name,
+                    unique_name=login_name,
                     changed_since=lookback,
                 )
             )
@@ -798,6 +813,7 @@ async def sync_time_from_tfs(
                     period_start=period_start,
                     current_user_tokens=user_tokens,
                     current_user_strong_tokens=user_strong_tokens,
+                    trust_me_task=True,
                 )
                 daily_hours = merge_slices_by_day(
                     slices, period_start=period_start, period_end=end
@@ -872,6 +888,11 @@ async def sync_time_from_tfs(
         "message": (
             None
             if imported > 0
-            else "TFS: не найдено ваших списаний за период (проверьте PAT и stream)"
+            else (
+                "TFS: задачи найдены, но часов в History/Completed Work за период нет. "
+                "Включите TRACKING_STREAM_ENABLED в .env на сервере (как в Oscar /track)."
+                if tasks_scanned > 0
+                else "TFS: не найдено ваших задач за период (проверьте PAT и логин TFS)."
+            )
         ),
     }

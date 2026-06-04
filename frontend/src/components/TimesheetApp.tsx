@@ -165,8 +165,10 @@ export default function TimesheetApp({ onLogout }: Props) {
           source?: string
         }
         sessionStorage.setItem(syncStorageKey(start, syncView), String(Date.now()))
-        if (result.message && (result.imported ?? 0) === 0 && !result.cached) {
-          setError(result.message)
+        if ((result.imported ?? 0) === 0 && !result.cached) {
+          setError(
+            result.message ?? 'Синхронизация завершена, но часов за период не найдено.',
+          )
         }
         if (!result.cached && ((result.imported ?? 0) > 0 || force)) {
           void loadStats()

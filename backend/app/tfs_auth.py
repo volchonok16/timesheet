@@ -154,6 +154,15 @@ def build_tfs_auth(
     )
 
 
+def tfs_login_unique_name(auth: TfsAuth) -> str | None:
+    """Логин для WIQL/stream: из TFS identity или поля username при входе по PAT."""
+    for candidate in (auth.tfs_unique_name, auth.username, auth.tfs_email):
+        raw = (candidate or "").strip()
+        if raw:
+            return raw
+    return None
+
+
 def attach_tfs_identity(auth: TfsAuth, identity: TfsIdentity) -> TfsAuth:
     return replace(
         auth,

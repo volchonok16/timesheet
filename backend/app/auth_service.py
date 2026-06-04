@@ -12,6 +12,7 @@ from app.config import settings
 from app.http_auth import auth_attempts
 from app.schemas import AuthLoginOut
 from app.tfs_auth import TfsAuth, attach_tfs_identity
+from app.tfs_identity import identity_from_auth_login, identity_has_tokens, merge_tfs_identities
 from app.tfs_client import TfsClient, wiql_quote
 
 
@@ -86,12 +87,14 @@ async def resolve_working_auth(auth: TfsAuth) -> tuple[TfsAuth, str]:
 
 
 async def ensure_auth_identity(client: TfsClient, auth: TfsAuth) -> TfsAuth:
-    """Дополняет сессию логином из connectionData/profile, если при входе его не было."""
-    if auth.identity_match_tokens():
-        return auth
-    identity = await client.get_authenticated_user_identity()
-    if identity:
-        return attach_tfs_identity(auth, identity)
+    """Сохраняет в сессии логин: форма входа + connectionData/profile/WIQL @Me."""
+    from_form = identity_from_auth_login(auth)
+    from_api = await client.get_authenticated_user_identity()
+    merged = merge_tfs_identities(from_form, from_api)
+    if identity_has_tokens(merged):
+        return attach_tfs_identity(auth, merged)
+    if from_form:
+        return attach_tfs_identity(auth, from_form)
     return auth
 
 
