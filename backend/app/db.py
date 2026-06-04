@@ -30,6 +30,14 @@ class TimeEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AuthSessionRow(Base):
+    __tablename__ = "auth_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class AccountSyncState(Base):
     """Когда последний раз подтягивали TFS для account + периода (не дёргать TFS на каждый refresh)."""
 

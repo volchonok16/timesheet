@@ -78,6 +78,15 @@ def startup() -> None:
         )
         conn.execute(
             text(
+                "CREATE TABLE IF NOT EXISTS auth_sessions ("
+                "session_id VARCHAR(64) PRIMARY KEY, "
+                "payload TEXT NOT NULL, "
+                "created_at TIMESTAMP NOT NULL DEFAULT NOW()"
+                ")"
+            )
+        )
+        conn.execute(
+            text(
                 "CREATE TABLE IF NOT EXISTS account_sync_states ("
                 "id SERIAL PRIMARY KEY, "
                 "account_key VARCHAR(255) NOT NULL, "

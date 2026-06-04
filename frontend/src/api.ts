@@ -60,8 +60,19 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   return fetch(`${apiBase}${path}`, { ...init, headers })
 }
 
+export class ApiAuthError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ApiAuthError'
+  }
+}
+
 export async function getJson<T>(path: string): Promise<T> {
   const response = await apiFetch(path)
+  if (response.status === 401) {
+    clearSessionId()
+    throw new ApiAuthError('Сессия не найдена или истекла. Войдите в TFS снова.')
+  }
   if (!response.ok) throw new Error(await readApiError(response))
   return response.json()
 }
