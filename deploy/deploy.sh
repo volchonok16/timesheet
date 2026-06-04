@@ -249,11 +249,9 @@ check_nginx_multi_site() {
   fi
   if nginx -T 2>/dev/null | grep -E 'listen.*443.*default_server' | grep -qv "server_name ${DOMAIN}"; then
     echo ""
-    warn "На 443 есть default_server у другого сайта (например pallink.fun)."
-    warn "Запросы на https://${DOMAIN} могут уходить на чужой домен."
-    warn "Откройте конфиг pallink и уберите default_server с listen 443:"
-    warn "  listen 443 ssl;   # без default_server"
-    warn "См. deploy/MULTI-DOMAIN.md"
+    warn "На 443 есть default_server — https://${DOMAIN} может уходить на pallink.fun."
+    warn "Запустите: sudo bash deploy/fix-coexist.sh"
+    warn "pallink nginx — только из Ganta (ganta/deploy/nginx/pallink.conf), см. deploy/MULTI-DOMAIN.md"
     nginx -T 2>/dev/null | grep -E 'listen.*443|server_name|default_server' | head -30 || true
   fi
   if [[ -f "$CERT_DIR/fullchain.pem" ]] \

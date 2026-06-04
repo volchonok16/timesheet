@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+warn() { echo "!!  $*" >&2; }
+
 need_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     echo "Запустите: sudo bash deploy/fix-coexist.sh" >&2
