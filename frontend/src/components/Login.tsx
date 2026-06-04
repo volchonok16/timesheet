@@ -47,7 +47,7 @@ export default function Login({ onSuccess }: LoginProps) {
       project: project.trim(),
       projectId: projectId.trim() || null,
       domain: domain.trim() || null,
-      username: mode === 'account' ? username.trim() : null,
+      username: username.trim() || null,
       password: mode === 'account' ? password : null,
       pat: mode === 'token' ? pat.trim() : null,
       cookie: null,
@@ -59,8 +59,8 @@ export default function Login({ onSuccess }: LoginProps) {
       setLoading(false)
       return
     }
-    if (mode === 'token' && !body.pat) {
-      setError('Введите токен PAT.')
+    if (mode === 'token' && (!body.pat || !body.username)) {
+      setError('Введите логин TFS (email) и токен PAT.')
       setLoading(false)
       return
     }
@@ -133,17 +133,29 @@ export default function Login({ onSuccess }: LoginProps) {
               </label>
             </>
           ) : (
-            <label className="field">
-              <span>Personal Access Token</span>
-              <input
-                type="password"
-                value={pat}
-                onChange={(e) => setPat(e.target.value)}
-                placeholder="TFS → User settings → PAT"
-                autoComplete="off"
-                required
-              />
-            </label>
+            <>
+              <label className="field">
+                <span>Логин TFS</span>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="user@t2.ru или TELE2\\user"
+                  autoComplete="username"
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>Personal Access Token</span>
+                <input
+                  type="password"
+                  value={pat}
+                  onChange={(e) => setPat(e.target.value)}
+                  placeholder="TFS → User settings → PAT"
+                  autoComplete="off"
+                  required
+                />
+              </label>
+            </>
           )}
 
           {error && <p className="error-banner">{error}</p>}

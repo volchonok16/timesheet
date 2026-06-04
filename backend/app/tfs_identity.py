@@ -99,9 +99,66 @@ def merge_tfs_identities(*items: TfsIdentity | None) -> TfsIdentity | None:
     )
 
 
+def identity_from_identity_ref(blob: Any) -> TfsIdentity | None:
+    if not isinstance(blob, dict):
+        return None
+    id_ref = as_dict(blob.get("identityRef"))
+    source = id_ref or blob
+    unique = _first_non_empty(
+        source.get("uniqueName"),
+        source.get("name"),
+        source.get("principalName"),
+        source.get("providerDisplayName"),
+    )
+    email = _first_non_empty(source.get("mailAddress"), source.get("emailAddress"))
+    if not email and unique and "@" in unique:
+        email = unique.split("\\")[-1] if "\\" in unique else unique
+    identity = TfsIdentity(
+        display_name=_first_non_empty(_display_from_blob(blob), _display_from_blob(source)),
+        unique_name=unique,
+        descriptor=_first_non_empty(source.get("descriptor")),
+        identity_id=_first_non_empty(source.get("id")),
+        email=email,
+    )
+    if identity.match_tokens() or identity.strong_tokens():
+        return identity
+    return None
+
+
+def identity_from_auth_login(auth: Any) -> TfsIdentity | None:
+    """Логин из формы входа (email@t2.ru → TELE2\\user и т.д.), когда TFS API не отдаёт uniqueName."""
+    from app.http_auth import expand_login_usernames
+
+    raw = (getattr(auth, "username", None) or "").strip()
+    if not raw:
+        return None
+    domain = (getattr(auth, "domain", None) or "").strip() or None
+    candidates = expand_login_usernames(raw, domain)
+    unique = next((c for c in candidates if "\\" in c), None) or (candidates[0] if candidates else raw)
+    email = raw if "@" in raw else None
+    if not email and unique and "@" in unique:
+        email = unique.split("\\")[-1] if "\\" in unique else unique
+    identity = TfsIdentity(unique_name=unique, email=email)
+    return identity if identity.match_tokens() else None
+
+
+def identity_from_work_item_fields(fields: dict[str, Any]) -> TfsIdentity | None:
+    for key in ("System.ChangedBy", "System.AssignedTo", "System.CreatedBy"):
+        parsed = identity_from_identity_ref(fields.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
 def connection_user_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     for key in ("authenticatedUser", "authorizedUser", "user"):
         user = as_dict(payload.get(key))
         if user:
             return user
     return None
+
+
+def identity_has_tokens(identity: TfsIdentity | None) -> bool:
+    if identity is None:
+        return False
+    return bool(identity.match_tokens() or identity.strong_tokens())

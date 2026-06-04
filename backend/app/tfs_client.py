@@ -12,8 +12,12 @@ from app.json_utils import as_dict, as_list, as_relation_list, as_work_item_list
 from app.tfs_auth import TfsAuth, TfsIdentity
 from app.tfs_identity import (
     connection_user_from_payload,
+    identity_from_auth_login,
     identity_from_connection_user,
+    identity_from_identity_ref,
     identity_from_profile,
+    identity_from_work_item_fields,
+    identity_has_tokens,
     merge_tfs_identities,
 )
 
@@ -118,29 +122,112 @@ class TfsClient:
         return None
 
     async def get_profile_identity(self) -> TfsIdentity | None:
-        for api_version in _api_version_candidates("6.0"):
-            response = await self.client.get(
-                "/_apis/profile/profiles/me",
-                params={"api-version": api_version},
-            )
-            if response.status_code != 200:
-                continue
-            payload = response.json()
-            if not isinstance(payload, dict):
-                continue
-            identity = identity_from_profile(payload)
-            if identity.match_tokens() or identity.strong_tokens():
+        paths = (
+            "/_apis/profile/profiles/me",
+            f"/{self.project}/_apis/profile/profiles/me",
+        )
+        for path in paths:
+            for api_version in _api_version_candidates("6.0"):
+                response = await self.client.get(path, params={"api-version": api_version})
+                if response.status_code != 200:
+                    continue
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    continue
+                identity = identity_from_profile(payload)
+                if identity_has_tokens(identity):
+                    return identity
+        return None
+
+    async def search_identity(self, filter_value: str) -> TfsIdentity | None:
+        needle = filter_value.strip()
+        if not needle:
+            return None
+        for api_version in _api_version_candidates("5.1"):
+            for search_filter in ("General", "AccountName", "DisplayName"):
+                response = await self.client.get(
+                    "/_apis/identities",
+                    params={
+                        "searchFilter": search_filter,
+                        "filterValue": needle,
+                        "queryMembership": "None",
+                        "api-version": api_version,
+                    },
+                )
+                if response.status_code != 200:
+                    continue
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    continue
+                for item in as_list(payload.get("value")):
+                    if not isinstance(item, dict):
+                        continue
+                    identity = identity_from_identity_ref(item)
+                    if identity_has_tokens(identity):
+                        return identity
+        return None
+
+    async def get_identity_via_me_wiql(self) -> TfsIdentity | None:
+        """Узнать владельца PAT через @Me на любой недавней задаче."""
+        project = wiql_quote(self.project)
+        wiql = (
+            f"SELECT TOP 1 [System.Id] FROM WorkItems "
+            f"WHERE [System.TeamProject] = {project} AND ("
+            "[System.ChangedBy] = @Me OR [System.AssignedTo] = @Me OR [System.CreatedBy] = @Me"
+            ") ORDER BY [System.ChangedDate] DESC"
+        )
+        try:
+            payload = await self.run_wiql(wiql)
+        except httpx.HTTPError:
+            return None
+        item_id: int | None = None
+        for item in as_list(payload.get("workItems")):
+            if isinstance(item, dict) and item.get("id"):
+                item_id = int(item["id"])
+                break
+        if item_id is None:
+            return None
+        items = await self.get_work_items_batch(
+            [item_id],
+            fields=[
+                "System.Id",
+                "System.ChangedBy",
+                "System.AssignedTo",
+                "System.CreatedBy",
+            ],
+        )
+        for item in items:
+            fields = as_dict(item.get("fields"))
+            identity = identity_from_work_item_fields(fields)
+            if identity_has_tokens(identity):
                 return identity
         return None
 
     async def get_authenticated_user_identity(self) -> TfsIdentity | None:
-        """Владелец PAT: connectionData, затем profile/me."""
+        """Владелец PAT: connectionData, profile, WIQL @Me, identities search, логин из формы."""
         from_connection: TfsIdentity | None = None
         user = await self.get_connection_authenticated_user()
         if user:
-            from_connection = identity_from_connection_user(user)
+            parsed = identity_from_connection_user(user)
+            if identity_has_tokens(parsed):
+                from_connection = parsed
         from_profile = await self.get_profile_identity()
-        return merge_tfs_identities(from_connection, from_profile)
+        from_me = await self.get_identity_via_me_wiql()
+        merged = merge_tfs_identities(from_connection, from_profile, from_me)
+        if identity_has_tokens(merged):
+            return merged
+        for needle in (
+            self.tfs_auth.tfs_unique_name,
+            self.tfs_auth.tfs_email,
+            self.tfs_auth.username,
+        ):
+            if not needle:
+                continue
+            found = await self.search_identity(str(needle))
+            if identity_has_tokens(found):
+                return merge_tfs_identities(merged, found)
+        from_login = identity_from_auth_login(self.tfs_auth)
+        return merge_tfs_identities(merged, from_login)
 
     async def get_authenticated_user_name(self) -> str | None:
         identity = await self.get_authenticated_user_identity()

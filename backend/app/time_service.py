@@ -94,7 +94,13 @@ def total_hours(hours: float, minutes: int) -> float:
 
 def owner_unique_name_for(auth: TfsAuth) -> str | None:
     """Канонический логин TFS (TELE2\\user) для владельца строки."""
-    for candidate in (auth.tfs_unique_name, auth.username, auth.tfs_email):
+    for candidate in (
+        auth.tfs_unique_name,
+        auth.username,
+        auth.tfs_email,
+        auth.tfs_descriptor,
+        auth.tfs_identity_id,
+    ):
         raw = (candidate or "").strip()
         if raw:
             return raw.casefold()

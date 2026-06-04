@@ -109,9 +109,9 @@ async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
         raise HTTPException(
             status_code=401,
             detail=(
-                "TFS принял учётные данные, но не вернул идентификатор пользователя "
-                "(uniqueName / providerDisplayName). Проверьте URL коллекции "
-                "(например https://tfs.t2.ru/tfs/Main) и создайте новый PAT."
+                "TFS принял PAT, но не удалось определить ваш логин. "
+                "При входе по токену укажите email или логин (user@t2.ru или TELE2\\user) "
+                "в поле «Логин TFS». Проверьте URL коллекции: https://tfs.t2.ru/tfs/Main."
             ),
         )
     session_id = create_session(resolved)
