@@ -143,11 +143,13 @@ nginx (системный)
 
 ---
 
-## 7. Редирект на другой домен (pallink.fun и т.д.)
+## 7. Два домена на одном VPS (mateplace + pallink)
 
-На одном VPS несколько сайтов — см. **[deploy/MULTI-DOMAIN.md](MULTI-DOMAIN.md)**.
+Оба сайта могут работать **одновременно** — см. **[deploy/MULTI-DOMAIN.md](MULTI-DOMAIN.md)**.
 
-Кратко: у **другого** сайта в nginx уберите `default_server` на `listen 443`, затем `sudo bash deploy/deploy.sh`.
+- Timesheet: порты **31080**, **31573**, nginx `mateplace.conf`  
+- Roadmap (pallink): свои порты (**32080**, **32573**), nginx `pallink.conf`  
+- У обоих: свой `server_name`, без `default_server` на 443
 
 ---
 

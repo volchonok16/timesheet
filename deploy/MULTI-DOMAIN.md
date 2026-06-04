@@ -1,102 +1,206 @@
-# Несколько доменов на одном VPS (mateplace.ru + pallink.fun)
+# Два домена на одном VPS (mateplace.ru + pallink.fun)
 
-Если при открытии **https://mateplace.ru** браузер уводит на **https://pallink.fun/** — nginx отдаёт **другой сайт** как сайт по умолчанию (`default_server`).
+Один сервер, **два независимых сайта** — нормальная схема. Они не мешают друг другу, если у каждого:
 
-## Диагностика на сервере
+- свой каталог и свой `docker compose`;
+- свои порты на `127.0.0.1`;
+- свой файл nginx с **`server_name`** только для своего домена;
+- свой SSL-сертификат Let's Encrypt;
+- **нет** `default_server` на `listen 443` (ни у одного из них).
 
-```bash
-# Какие сайты включены
-ls -la /etc/nginx/sites-enabled/
-
-# Кто слушает 443 и кто default_server
-sudo nginx -T 2>/dev/null | grep -E 'listen.*443|server_name|default_server'
-
-# Куда реально отвечает mateplace (с сервера)
-curl -sI --resolve mateplace.ru:443:127.0.0.1 https://mateplace.ru/ -k | head -15
-curl -sI --resolve pallink.fun:443:127.0.0.1 https://pallink.fun/ -k | head -5
+```
+                    Интернет :80 / :443
+                              │
+                         nginx (один)
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+   mateplace.ru        api.mateplace.ru      pallink.fun
+          │                   │                   │
+   127.0.0.1:31573    127.0.0.1:31080    127.0.0.1:32573 (пример)
+   127.0.0.1:31080                         127.0.0.1:32080 (пример)
+          │                   │                   │
+   /var/www/timesheet                    /var/www/pallink (Roadmap)
 ```
 
-Если в ответе на `mateplace.ru` в заголовке `Location: https://pallink.fun/...` — правьте nginx у **pallink**, не Timesheet.
+## Порты (не пересекать)
 
-## Исправление (типичное)
+| Проект | Каталог | Frontend (host) | Backend (host) | Домены |
+|--------|---------|-----------------|----------------|--------|
+| **TFS Timesheet** | `/var/www/timesheet` | **31573** | **31080** | mateplace.ru, api.mateplace.ru |
+| **TFS Roadmap** (pallink) | `/var/www/pallink` (или как у вас) | **32573** | **32080** | pallink.fun |
 
-### 1. У pallink убрать `default_server`
+В `.env` каждого проекта свои `TIMESHEET_*_PORT` / аналоги.  
+Timesheet **не трогает** контейнеры pallink — только свой `docker compose`.
 
-Откройте конфиг pallink (имя файла может отличаться):
+Пример для Roadmap в `.env` pallink:
 
-```bash
-sudo grep -r default_server /etc/nginx/sites-enabled/
-sudo nano /etc/nginx/sites-enabled/pallink   # или pallink.fun, roadmap…
+```env
+TIMESHEET_HTTP_PORT=32080
+TIMESHEET_BACKEND_PORT=32080
+TIMESHEET_FRONTEND_PORT=32573
 ```
 
-Было (плохо на общем сервере):
+(имена переменных могут совпадать, если Roadmap — форк того же шаблона.)
+
+---
+
+## 1. Timesheet (mateplace.ru)
+
+```bash
+cd /var/www/timesheet
+git pull
+cp .env.production.example .env   # при первом разе
+nano .env                         # порты 31080, 31573, домены mateplace
+sudo bash deploy/deploy.sh
+sudo bash deploy/deploy.sh --issue-ssl   # если ещё нет сертификата mateplace
+```
+
+Проверка:
+
+```bash
+curl -s http://127.0.0.1:31080/api/health
+curl -sI --resolve mateplace.ru:443:127.0.0.1 https://mateplace.ru/ -k | head -8
+```
+
+---
+
+## 2. Pallink / Roadmap (pallink.fun)
+
+Код Roadmap в **отдельной** папке, свой деплой, **другие** порты (32080 / 32573).
+
+Nginx для pallink — **отдельный** файл, например `/etc/nginx/sites-available/pallink.conf`:
 
 ```nginx
-listen 443 ssl http2 default_server;
+# Шаблон: deploy/nginx/pallink.coexist.example.conf
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pallink.fun www.pallink.fun;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name www.pallink.fun;
+
+    ssl_certificate /etc/letsencrypt/live/pallink.fun/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pallink.fun/privkey.pem;
+
+    return 301 https://pallink.fun$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name pallink.fun;
+
+    ssl_certificate /etc/letsencrypt/live/pallink.fun/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pallink.fun/privkey.pem;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:32080/api/;
+        include snippets/proxy-common.conf;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:32573;
+        include snippets/proxy-common.conf;
+        proxy_set_header Host localhost;
+    }
+}
 ```
 
-Должно быть:
+Включить:
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/pallink.conf /etc/nginx/sites-enabled/pallink.conf
+```
+
+Сертификат pallink (один раз):
+
+```bash
+sudo certbot certonly --webroot -w /var/www/certbot \
+  -d pallink.fun -d www.pallink.fun
+```
+
+---
+
+## 3. Обязательно: убрать `default_server`
+
+Оба сайта работают **параллельно**, но если у pallink (или у кого-то одного) стоит:
+
+```nginx
+listen 443 ssl default_server;
+```
+
+то запросы с «чужим» Host (или по IP) уйдут на этот сайт — отсюда редирект mateplace → pallink.
+
+**Исправление:** у **обоих** конфигов только:
 
 ```nginx
 listen 443 ssl http2;
-server_name pallink.fun www.pallink.fun;
+server_name <свой-домен>;
 ```
 
-То же для `listen 80 default_server` — уберите `default_server`, оставьте явный `server_name pallink.fun`.
+без `default_server`.
 
-### 2. Timesheet (mateplace) должен быть включён
+Проверка:
 
 ```bash
-cd /var/www/timesheet
-ls -la /etc/nginx/sites-enabled/mateplace.conf
-sudo bash deploy/deploy.sh
+sudo grep -r default_server /etc/nginx/sites-enabled/
+# ideally empty or only intentional catch-all you understand
 ```
 
-### 3. Отдельные SSL-сертификаты
+---
 
-У каждого домена свой сертификат:
-
-```bash
-sudo certbot certificates
-```
-
-Должны быть отдельно:
-
-- `mateplace.ru` (+ www, api)
-- `pallink.fun` (свой)
-
-Для mateplace:
-
-```bash
-cd /var/www/timesheet
-sudo bash deploy/deploy.sh --issue-ssl
-```
-
-### 4. Проверка и перезагрузка
+## 4. Итоговая проверка обоих доменов
 
 ```bash
 sudo nginx -t
 sudo systemctl reload nginx
-curl -sI https://mateplace.ru | head -10
+
+curl -sI https://mateplace.ru | head -5
+curl -sI https://pallink.fun | head -5
+
+ls -la /etc/nginx/sites-enabled/
+# ожидается: mateplace.conf  pallink.conf  (и НЕ default)
 ```
 
-## Важно
+| URL | Ожидание |
+|-----|----------|
+| https://mateplace.ru | TFS Timesheet, без редиректа на pallink |
+| https://api.mateplace.ru/api/health | `{"status":"ok",...}` |
+| https://pallink.fun | TFS Roadmap |
 
-| Домен | Конфиг nginx | Docker Timesheet |
-|-------|----------------|------------------|
-| mateplace.ru, api.mateplace.ru | `sites-enabled/mateplace.conf` | да (порты 31080, 31573) |
-| pallink.fun | свой файл в sites-enabled | нет (свой проект Roadmap) |
+---
 
-Не открывайте сайт по **IP сервера** — без `Host` nginx выберет `default_server` (часто pallink).
+## 5. DNS
 
-В браузере используйте именно **https://mateplace.ru**.
+Оба домена — **A-запись на один IP** VPS:
 
-## Если mateplace всё ещё не открывается
+- `mateplace.ru`, `www`, `api` → IP VPS  
+- `pallink.fun`, `www` → тот же IP VPS  
+
+Это правильно для двух сайтов на одном сервере.
+
+---
+
+## 6. Обновления
 
 ```bash
-curl -s http://127.0.0.1:31080/api/health
-docker compose -f /var/www/timesheet/docker-compose.yml \
-  -f /var/www/timesheet/docker-compose.prod.yml ps
+# Timesheet
+cd /var/www/timesheet && git pull && sudo bash deploy/deploy.sh --pull
+
+# Roadmap — в своей папке, свой скрипт/compose
+cd /var/www/pallink && git pull && …
 ```
 
-Backend должен быть `Up`. Если health OK, а в браузере pallink — проблема только в nginx/SSL/DNS.
+Деплой Timesheet **не удаляет** `sites-enabled/pallink.conf` — трогает только `mateplace.conf`.
