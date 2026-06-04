@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -16,11 +16,9 @@ from app.tfs_auth import TfsAuth, attach_tfs_identity
 from app.tfs_client import TfsClient
 from app.time_service import (
     ROLE_LABELS,
-    list_recent,
     owner_unique_name_for,
     parse_tracking_title,
     period_end,
-    timesheet_parent_ids,
     touch_recent,
 )
 
@@ -87,8 +85,14 @@ def _history_increment_text(fields: dict[str, Any]) -> str:
     if new_val.startswith(old_val):
         return new_val[len(old_val) :].lstrip("\n\r")
     old_lines = {line.strip() for line in old_val.splitlines() if line.strip()}
+    if not old_lines:
+        return ""
     added = [line for line in new_val.splitlines() if line.strip() and line.strip() not in old_lines]
-    return "\n".join(added) if added else new_val
+    if not added:
+        return ""
+    if all(not HISTORY_LINE.match(line) for line in added):
+        return ""
+    return "\n".join(added)
 
 
 def parse_update_time_slices(
@@ -188,14 +192,13 @@ def update_revised_by_current_user(
     current_user_strong_tokens: set[str],
 ) -> bool:
     """Только ревизии владельца PAT (uniqueName / descriptor / id)."""
-    if not current_user_strong_tokens and not current_user_tokens:
+    del current_user_tokens
+    if not current_user_strong_tokens:
         return False
-    author = update.get("revisedBy")
-    author_strong = _strong_identity_tokens(author)
-    if author_strong and current_user_strong_tokens:
-        return bool(author_strong & current_user_strong_tokens)
-    author_tokens = _identity_tokens_from_blob(author)
-    return _tokens_match(author_tokens, current_user_tokens)
+    author_strong = _strong_identity_tokens(update.get("revisedBy"))
+    if not author_strong:
+        return False
+    return bool(author_strong & current_user_strong_tokens)
 
 
 def assignee_tokens_from_fields(fields: dict[str, Any]) -> set[str]:
@@ -219,12 +222,9 @@ def work_item_assigned_to_current_user(
     assignee_strong = (
         _strong_identity_tokens(raw_assignee) if isinstance(raw_assignee, dict) else set()
     )
-    assignee_tokens = assignee_tokens_from_fields(fields)
-    if not assignee_tokens and not assignee_strong:
-        return True
-    if assignee_strong and current_user_strong_tokens:
-        return bool(assignee_strong & current_user_strong_tokens)
-    return _tokens_match(assignee_tokens, current_user_tokens)
+    if not assignee_strong or not current_user_strong_tokens:
+        return False
+    return bool(assignee_strong & current_user_strong_tokens)
 
 
 async def resolve_current_user_tokens(
@@ -294,6 +294,26 @@ def purge_all_imported_tfs_entries(db: Session, auth: TfsAuth) -> int:
         select(TimeEntry.id).where(
             TimeEntry.account_key == auth.account_key,
             TimeEntry.tfs_sync_key.isnot(None),
+        )
+    ).all()
+    if not rows:
+        return 0
+    db.execute(delete(TimeEntry).where(TimeEntry.id.in_(rows)))
+    return len(rows)
+
+
+def purge_entries_not_owned_by_user(db: Session, auth: TfsAuth) -> int:
+    """Удаляет строки без владельца или с чужим owner (старый ошибочный импорт)."""
+    owner = owner_unique_name_for(auth)
+    if not owner:
+        return 0
+    rows = db.scalars(
+        select(TimeEntry.id).where(
+            TimeEntry.account_key == auth.account_key,
+            or_(
+                TimeEntry.owner_unique_name.is_(None),
+                func.lower(TimeEntry.owner_unique_name) != owner,
+            ),
         )
     ).all()
     if not rows:
@@ -406,6 +426,8 @@ async def collect_tracking_targets(
     current_user_tokens: set[str],
     current_user_strong_tokens: set[str],
 ) -> list[TrackingTarget]:
+    """Только задачи, назначенные на владельца PAT (не все активности команды под ЗНИ)."""
+    del include_wiql, current_user_tokens
     seen: set[int] = set()
     targets: list[TrackingTarget] = []
 
@@ -414,59 +436,38 @@ async def collect_tracking_targets(
             seen.add(task_id)
             targets.append(TrackingTarget(task_id=task_id, parent_id=parent_id))
 
-    parent_ids: list[int] = []
-    for row in list_recent(db, auth, limit=settings.tfs_sync_max_parents):
-        parent_ids.append(row.id)
-    parent_ids.extend(
-        timesheet_parent_ids(
-            db,
-            auth,
-            period_start=period_start,
-            view=view,
-            recent_limit=settings.tfs_sync_max_parents,
-        )
+    if not auth.tfs_unique_name:
+        return []
+
+    lookback = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
+    assigned_ids = await client.find_tracking_tasks_assigned_to_user(
+        unique_name=auth.tfs_unique_name,
+        changed_since=lookback,
+        limit=settings.tfs_sync_max_tasks,
     )
-    parent_seen: set[int] = set()
-    unique_parents: list[int] = []
-    for parent_id in parent_ids:
-        if parent_id not in parent_seen:
-            parent_seen.add(parent_id)
-            unique_parents.append(parent_id)
-    unique_parents = unique_parents[: settings.tfs_sync_max_parents]
+    for task_id in assigned_ids:
+        parent_id = await client.get_parent_work_item_id(task_id)
+        if parent_id is not None:
+            add(task_id, parent_id)
 
-    if unique_parents:
-        child_lists = await asyncio.gather(
-            *[client.get_child_tasks(pid) for pid in unique_parents],
-            return_exceptions=True,
-        )
-        for parent_id, children in zip(unique_parents, child_lists):
-            if isinstance(children, BaseException):
+    end = period_end(period_start, view)
+    owner = owner_unique_name_for(auth)
+    if owner:
+        local_rows = db.execute(
+            select(TimeEntry.tracking_work_item_id, TimeEntry.parent_work_item_id).where(
+                TimeEntry.account_key == auth.account_key,
+                TimeEntry.tracking_work_item_id.isnot(None),
+                TimeEntry.entry_date >= period_start,
+                TimeEntry.entry_date <= end,
+                func.lower(TimeEntry.owner_unique_name) == owner,
+            )
+        ).all()
+        for tracking_id, parent_id in local_rows:
+            if tracking_id is None or parent_id is None:
                 continue
-            for child in children:
-                if not is_tracking_child_item(child):
-                    continue
-                child_fields = {"System.AssignedTo": child.get("assignedTo")}
-                if not work_item_assigned_to_current_user(
-                    child_fields,
-                    current_user_tokens=current_user_tokens,
-                    current_user_strong_tokens=current_user_strong_tokens,
-                ):
-                    continue
-                add(int(child["id"]), parent_id)
-
-    if include_wiql and auth.tfs_unique_name:
-        lookback = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
-        wiql_ids = await client.find_task_ids_changed_by_user(
-            unique_name=auth.tfs_unique_name,
-            changed_since=lookback,
-            limit=settings.tfs_sync_max_tasks,
-        )
-        for task_id in wiql_ids:
-            if task_id in seen:
-                continue
-            parent_id = await client.get_parent_work_item_id(task_id)
-            if parent_id is not None:
-                add(task_id, parent_id)
+            tid, pid = int(tracking_id), int(parent_id)
+            if tid not in seen:
+                add(tid, pid)
 
     return targets[: settings.tfs_sync_max_tasks]
 
@@ -512,6 +513,7 @@ async def sync_time_from_tfs(
         owner_key = owner_unique_name_for(auth)
         if force:
             purged = purge_all_imported_tfs_entries(db, auth)
+            purged += purge_entries_not_owned_by_user(db, auth)
         else:
             purged = purge_imported_tfs_entries(
                 db, auth, period_start=period_start, period_end=end

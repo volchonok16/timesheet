@@ -131,7 +131,11 @@ def auth_defaults() -> AuthDefaultsOut:
 
 @app.get("/api/auth/status", response_model=AuthStatusOut)
 def auth_status(auth: TfsAuth = Depends(require_tfs_auth)) -> AuthStatusOut:
-    return AuthStatusOut(authenticated=True)
+    return AuthStatusOut(
+        authenticated=True,
+        tfs_display_name=auth.tfs_display_name,
+        tfs_unique_name=auth.tfs_unique_name,
+    )
 
 
 @app.post("/api/auth/login", response_model=AuthLoginOut)

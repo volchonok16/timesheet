@@ -93,18 +93,19 @@ def total_hours(hours: float, minutes: int) -> float:
 
 
 def owner_unique_name_for(auth: TfsAuth) -> str | None:
+    """Канонический логин TFS (TELE2\\user) для владельца строки."""
     raw = (auth.tfs_unique_name or auth.username or "").strip()
     return raw.casefold() if raw else None
 
 
 def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
-    """Ручные списания — свои; импорт из TFS — только с меткой владельца PAT."""
-    if not entry.tfs_sync_key:
-        return True
     owner = owner_unique_name_for(auth)
-    if not owner or not entry.owner_unique_name:
+    if not owner:
         return False
-    return entry.owner_unique_name.casefold() == owner
+    stored = (entry.owner_unique_name or "").strip().casefold()
+    if not stored:
+        return False
+    return stored == owner
 
 
 def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[TimeEntry]:
@@ -112,14 +113,11 @@ def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[Tim
 
 
 def entry_ownership_clause(auth: TfsAuth):
-    """SQL: ручные списания или импорт с owner = текущий PAT."""
+    """SQL: только строки с owner = текущий пользователь PAT."""
     owner = owner_unique_name_for(auth)
     if not owner:
-        return TimeEntry.tfs_sync_key.is_(None)
-    return or_(
-        TimeEntry.tfs_sync_key.is_(None),
-        TimeEntry.owner_unique_name == owner,
-    )
+        return TimeEntry.id.is_(None)
+    return func.lower(TimeEntry.owner_unique_name) == owner
 
 
 def parent_items_from_recent(
@@ -185,6 +183,7 @@ def timesheet_parent_ids(
             TimeEntry.account_key == auth.account_key,
             TimeEntry.entry_date >= period_start,
             TimeEntry.entry_date <= end,
+            entry_ownership_clause(auth),
         )
         .distinct()
     ).all()

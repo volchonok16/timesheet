@@ -43,6 +43,8 @@ class AuthLoginOut(ApiModel):
 
 class AuthStatusOut(ApiModel):
     authenticated: bool
+    tfs_display_name: str | None = None
+    tfs_unique_name: str | None = None
 
 
 class WorkItemOut(ApiModel):

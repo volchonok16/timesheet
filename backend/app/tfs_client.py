@@ -255,6 +255,38 @@ class TfsClient:
                 continue
         return None
 
+    async def find_tracking_tasks_assigned_to_user(
+        self,
+        *,
+        unique_name: str,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        """Дочерние «Роль — активность», назначенные на текущего пользователя."""
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        user = wiql_quote(unique_name.strip())
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [System.AssignedTo] = {user} "
+            f"AND [System.Title] CONTAINS ' - ' "
+            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        payload = await self.run_wiql(wiql)
+        ids: list[int] = []
+        for item in as_list(payload.get("workItems")):
+            if not isinstance(item, dict):
+                continue
+            try:
+                ids.append(int(item["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if len(ids) >= limit:
+                break
+        return ids
+
     async def find_task_ids_changed_by_user(
         self,
         *,
@@ -262,7 +294,7 @@ class TfsClient:
         changed_since: date,
         limit: int = 80,
     ) -> list[int]:
-        """Задачи, которые менял текущий пользователь (как поток Oscar — только свои)."""
+        """Задачи, которые менял текущий пользователь."""
         project = wiql_quote(self.project)
         task_type = wiql_quote(settings.task_type_name)
         user = wiql_quote(unique_name.strip())

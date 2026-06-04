@@ -156,6 +156,25 @@ def test_assigned_to_other_user_skipped() -> None:
     )
 
 
+def test_unassigned_task_skipped() -> None:
+    tokens, strong = _pat_user_token_sets()
+    assert not work_item_assigned_to_current_user(
+        {},
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
+    )
+
+
+def test_history_increment_no_fallback_to_full_thread() -> None:
+    fields = {
+        "System.History": {
+            "oldValue": "старый блок",
+            "newValue": "совсем другой текст без diff",
+        },
+    }
+    assert _history_increment_text(fields) == ""
+
+
 def test_history_increment_skips_previous_lines() -> None:
     fields = {
         "System.History": {
