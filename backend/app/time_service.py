@@ -99,6 +99,9 @@ def owner_unique_name_for(auth: TfsAuth) -> str | None:
 
 
 def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
+    """Ручные списания в аккаунте — свои; импорт TFS — только с вашим owner."""
+    if not entry.tfs_sync_key:
+        return True
     owner = owner_unique_name_for(auth)
     if not owner:
         return False
@@ -113,11 +116,29 @@ def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[Tim
 
 
 def entry_ownership_clause(auth: TfsAuth):
-    """SQL: только строки с owner = текущий пользователь PAT."""
     owner = owner_unique_name_for(auth)
     if not owner:
-        return TimeEntry.id.is_(None)
-    return func.lower(TimeEntry.owner_unique_name) == owner
+        return TimeEntry.tfs_sync_key.is_(None)
+    return or_(
+        TimeEntry.tfs_sync_key.is_(None),
+        func.lower(TimeEntry.owner_unique_name) == owner,
+    )
+
+
+def backfill_entry_owners(db: Session, auth: TfsAuth) -> int:
+    """Проставить owner старым строкам этого аккаунта (после входа по PAT)."""
+    owner = owner_unique_name_for(auth)
+    if not owner:
+        return 0
+    rows = db.scalars(
+        select(TimeEntry).where(
+            TimeEntry.account_key == auth.account_key,
+            TimeEntry.owner_unique_name.is_(None),
+        )
+    ).all()
+    for row in rows:
+        row.owner_unique_name = owner
+    return len(rows)
 
 
 def parent_items_from_recent(

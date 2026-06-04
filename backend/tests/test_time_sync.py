@@ -156,9 +156,9 @@ def test_assigned_to_other_user_skipped() -> None:
     )
 
 
-def test_unassigned_task_skipped() -> None:
+def test_unassigned_task_allowed_for_sync() -> None:
     tokens, strong = _pat_user_token_sets()
-    assert not work_item_assigned_to_current_user(
+    assert work_item_assigned_to_current_user(
         {},
         current_user_tokens=tokens,
         current_user_strong_tokens=strong,

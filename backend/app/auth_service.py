@@ -6,6 +6,8 @@ import httpx
 from fastapi import HTTPException
 
 from app.auth_sessions import create_session
+from app.db import SessionLocal
+from app.time_service import backfill_entry_owners
 from app.config import settings
 from app.http_auth import auth_attempts
 from app.schemas import AuthLoginOut
@@ -96,6 +98,12 @@ async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
     finally:
         await client.close()
     session_id = create_session(resolved)
+    db = SessionLocal()
+    try:
+        backfill_entry_owners(db, resolved)
+        db.commit()
+    finally:
+        db.close()
     return AuthLoginOut(
         session_id=session_id,
         base_url=resolved.base_url,

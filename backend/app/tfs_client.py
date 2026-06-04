@@ -255,25 +255,7 @@ class TfsClient:
                 continue
         return None
 
-    async def find_tracking_tasks_assigned_to_user(
-        self,
-        *,
-        unique_name: str,
-        changed_since: date,
-        limit: int = 80,
-    ) -> list[int]:
-        """Дочерние «Роль — активность», назначенные на текущего пользователя."""
-        project = wiql_quote(self.project)
-        task_type = wiql_quote(settings.task_type_name)
-        user = wiql_quote(unique_name.strip())
-        wiql = (
-            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
-            f"AND [System.WorkItemType] = {task_type} "
-            f"AND [System.AssignedTo] = {user} "
-            f"AND [System.Title] CONTAINS ' - ' "
-            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
-            f"ORDER BY [System.ChangedDate] DESC"
-        )
+    async def _wiql_task_ids(self, wiql: str, *, limit: int) -> list[int]:
         payload = await self.run_wiql(wiql)
         ids: list[int] = []
         for item in as_list(payload.get("workItems")):
@@ -286,6 +268,55 @@ class TfsClient:
             if len(ids) >= limit:
                 break
         return ids
+
+    async def find_tracking_tasks_for_me(
+        self,
+        *,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        """Задачи, назначенные или изменённые текущим PAT (@Me)."""
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        since = changed_since.isoformat()
+        ids: list[int] = []
+        for clause in ("[System.AssignedTo] = @Me", "[System.ChangedBy] = @Me"):
+            wiql = (
+                f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+                f"AND [System.WorkItemType] = {task_type} "
+                f"AND {clause} "
+                f"AND [System.ChangedDate] >= '{since}' "
+                f"ORDER BY [System.ChangedDate] DESC"
+            )
+            try:
+                found = await self._wiql_task_ids(wiql, limit=limit)
+            except Exception:
+                found = []
+            for task_id in found:
+                if task_id not in ids:
+                    ids.append(task_id)
+                if len(ids) >= limit:
+                    return ids
+        return ids
+
+    async def find_tracking_tasks_assigned_to_user(
+        self,
+        *,
+        unique_name: str,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        user = wiql_quote(unique_name.strip())
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [System.AssignedTo] = {user} "
+            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        return await self._wiql_task_ids(wiql, limit=limit)
 
     async def find_task_ids_changed_by_user(
         self,
@@ -305,18 +336,7 @@ class TfsClient:
             f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
             f"ORDER BY [System.ChangedDate] DESC"
         )
-        payload = await self.run_wiql(wiql)
-        ids: list[int] = []
-        for item in as_list(payload.get("workItems")):
-            if not isinstance(item, dict):
-                continue
-            try:
-                ids.append(int(item["id"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-            if len(ids) >= limit:
-                break
-        return ids
+        return await self._wiql_task_ids(wiql, limit=limit)
 
     async def find_task_ids_with_completed_work(
         self,
