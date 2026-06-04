@@ -24,7 +24,7 @@ import WeekGrid from './WeekGrid'
 const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
 const BACKGROUND_SYNC_DELAY_MS = 45 * 1000
 const REPAIR_DELAY_MS = 12 * 1000
-const DATA_REPAIR_KEY = 'timesheet-data-repair-v6'
+const DATA_REPAIR_KEY = 'timesheet-data-repair-v9'
 
 type Props = {
   onLogout: () => void
@@ -158,19 +158,27 @@ export default function TimesheetApp({ onLogout }: Props) {
         if (!response.ok) {
           throw new Error(await response.text())
         }
-        const result = (await response.json()) as { imported?: number; cached?: boolean }
+        const result = (await response.json()) as {
+          imported?: number
+          cached?: boolean
+          message?: string
+          source?: string
+        }
         sessionStorage.setItem(syncStorageKey(start, syncView), String(Date.now()))
+        if (result.message && (result.imported ?? 0) === 0 && !result.cached) {
+          setError(result.message)
+        }
         if (!result.cached && ((result.imported ?? 0) > 0 || force)) {
           void loadStats()
           void loadTimesheet({ enrich: false, silent: true })
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания из TFS')
+        setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания')
       } finally {
         setSyncing(false)
       }
     },
-    [periodAnchor, periodStart, view],
+    [loadTimesheet, periodAnchor, periodStart, view],
   )
 
   useEffect(() => {
@@ -367,10 +375,10 @@ export default function TimesheetApp({ onLogout }: Props) {
               type="button"
               className="btn ghost today-btn"
               disabled={syncing}
-              title="Полная подтяжка из TFS (может занять до минуты)"
+              title="Подтянуть часы из TFS (как сетка /track)"
               onClick={() => void syncFromTfs(true)}
             >
-              {syncing ? 'Подтягиваем…' : 'Из TFS'}
+              {syncing ? 'Подтягиваем…' : 'Обновить часы'}
             </button>
           </div>
           <button type="button" className="btn ghost period-nav" onClick={() => shiftPeriod(1)}>

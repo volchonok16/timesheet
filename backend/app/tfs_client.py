@@ -299,6 +299,42 @@ class TfsClient:
                     return ids
         return ids
 
+    async def find_parent_work_items_for_me(
+        self,
+        *,
+        changed_since: date,
+        limit: int = 50,
+    ) -> list[int]:
+        """ЗНИ/требования/ошибки, с которыми работает текущий пользователь (@Me)."""
+        project = wiql_quote(self.project)
+        since = changed_since.isoformat()
+        parent_types = (
+            settings.change_request_type_name,
+            settings.requirement_type_name,
+            settings.error_type_name,
+        )
+        ids: list[int] = []
+        for type_name in parent_types:
+            work_type = wiql_quote(type_name)
+            for clause in ("[System.AssignedTo] = @Me", "[System.ChangedBy] = @Me"):
+                wiql = (
+                    f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+                    f"AND [System.WorkItemType] = {work_type} "
+                    f"AND {clause} "
+                    f"AND [System.ChangedDate] >= '{since}' "
+                    f"ORDER BY [System.ChangedDate] DESC"
+                )
+                try:
+                    found = await self._wiql_task_ids(wiql, limit=limit)
+                except Exception:
+                    found = []
+                for work_id in found:
+                    if work_id not in ids:
+                        ids.append(work_id)
+                    if len(ids) >= limit:
+                        return ids
+        return ids
+
     async def find_tracking_tasks_assigned_to_user(
         self,
         *,

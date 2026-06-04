@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -293,6 +294,25 @@ def aggregate_slices_for_task(
     return merged
 
 
+def merge_slices_by_day(
+    slices: list[ParsedTimeSlice],
+    *,
+    period_start: date,
+    period_end: date,
+) -> dict[date, float]:
+    """Сумма часов по дням недели (как delta[7] в сетке /track)."""
+    daily: dict[date, float] = defaultdict(float)
+    for slice_ in slices:
+        if not entry_in_period(slice_.entry_date, period_start=period_start, period_end=period_end):
+            continue
+        daily[slice_.entry_date] = round(daily[slice_.entry_date] + slice_.hours, 2)
+    return dict(daily)
+
+
+def grid_sync_key(task_id: int, entry_date: date) -> str:
+    return f"grid:{task_id}:{entry_date.isoformat()}"
+
+
 def purge_all_imported_tfs_entries(db: Session, auth: TfsAuth) -> int:
     """Удаляет все импортированные из TFS строки аккаунта (чужие/дубли при смене логики)."""
     rows = db.scalars(
@@ -432,7 +452,10 @@ async def collect_tracking_targets(
     current_user_tokens: set[str],
     current_user_strong_tokens: set[str],
 ) -> list[TrackingTarget]:
-    """Задачи, которые вы меняли или которые на вас назначены (не вся команда под ЗНИ)."""
+    """
+    Как сетка /track: родители (ЗНИ/требования) пользователя → все дочерние «Роль — активность».
+    Часы потом берутся только из ваших ревизий System.History.
+    """
     seen: set[int] = set()
     targets: list[TrackingTarget] = []
 
@@ -483,6 +506,10 @@ async def collect_tracking_targets(
     parent_ids.extend(
         timesheet_parent_ids(db, auth, period_start=period_start, view=view)
     )
+    if include_wiql:
+        parent_ids.extend(
+            await client.find_parent_work_items_for_me(changed_since=lookback)
+        )
     parent_seen: set[int] = set()
     unique_parents: list[int] = []
     for parent_id in parent_ids:
@@ -502,13 +529,6 @@ async def collect_tracking_targets(
             for child in children:
                 if not is_tracking_child_item(child):
                     continue
-                child_fields = {"System.AssignedTo": child.get("assignedTo")}
-                if not work_item_assigned_to_current_user(
-                    child_fields,
-                    current_user_tokens=current_user_tokens,
-                    current_user_strong_tokens=current_user_strong_tokens,
-                ):
-                    continue
                 add(int(child["id"]), parent_id)
 
     return targets[: settings.tfs_sync_max_tasks]
@@ -523,19 +543,7 @@ async def sync_time_from_tfs(
     force: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    from app.oscar_sync import sync_time_from_oscar
-
     end = period_end(period_start, view)
-    if force or should_run_sync(db, auth, period_start=period_start, view=view, force=force):
-        oscar_payload = await sync_time_from_oscar(
-            db, auth, period_start=period_start, view=view, force=force
-        )
-        if oscar_payload is not None and int(oscar_payload.get("imported") or 0) > 0:
-            if session_id and auth.tfs_unique_name:
-                from app.auth_sessions import update_session
-
-                update_session(session_id, auth)
-            return oscar_payload
 
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
         return {
@@ -617,8 +625,9 @@ async def sync_time_from_tfs(
                 "purged": purged,
                 "period_start": period_start,
                 "period_end": end,
-                "cached": False,
-            }
+        "cached": False,
+        "source": "tfs-grid",
+    }
 
         task_ids = [target.task_id for target in targets]
         parent_ids = list({target.parent_id for target in targets})
@@ -671,23 +680,25 @@ async def sync_time_from_tfs(
                 if not cost_project and parent_item:
                     cost_project = client.read_cost_project_value(parent_item)
 
-                local_imported = 0
-                local_skipped = 0
-                for slice_ in aggregate_slices_for_task(
+                slices = aggregate_slices_for_task(
                     updates,
                     tracking_work_item_id=task_id,
                     period_start=period_start,
                     current_user_tokens=user_tokens,
                     current_user_strong_tokens=user_strong_tokens,
-                ):
-                    if not entry_in_period(
-                        slice_.entry_date, period_start=period_start, period_end=end
-                    ):
+                )
+                daily_hours = merge_slices_by_day(
+                    slices, period_start=period_start, period_end=end
+                )
+                local_imported = 0
+                local_skipped = 0
+                for entry_date, hours in daily_hours.items():
+                    if abs(hours) < 0.01:
                         continue
-                    if slice_.sync_key in existing_keys:
+                    sync_key = grid_sync_key(task_id, entry_date)
+                    if sync_key in existing_keys:
                         local_skipped += 1
                         continue
-
                     db.add(
                         TimeEntry(
                             account_key=auth.account_key,
@@ -695,18 +706,19 @@ async def sync_time_from_tfs(
                             tracking_work_item_id=task_id,
                             role=role,
                             activity=activity,
-                            entry_date=slice_.entry_date,
-                            hours=slice_.hours,
-                            comment=slice_.comment,
+                            entry_date=entry_date,
+                            hours=hours,
+                            comment=None,
                             cost_project=cost_project,
-                            tfs_sync_key=slice_.sync_key,
+                            tfs_sync_key=sync_key,
                             owner_unique_name=owner_key,
                         )
                     )
-                    existing_keys.add(slice_.sync_key)
+                    existing_keys.add(sync_key)
                     local_imported += 1
 
-                parents_touched.add(parent_id)
+                if daily_hours:
+                    parents_touched.add(parent_id)
                 return local_imported, local_skipped
 
         results = await asyncio.gather(

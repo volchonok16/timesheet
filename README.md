@@ -28,7 +28,7 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 - Модальное окно «Внести время»: роль, активность, дата, добавить/вычесть, часы/минуты, комментарий
 - Создание/поиск дочерней задачи в TFS и обновление `Microsoft.VSTS.Scheduling.CompletedWork`
 - Локальное хранение дневных списаний в PostgreSQL (для календаря и табеля)
-- Подтягивание списаний из TFS (как **Oscar** `stream_get-time-tracking-results`): недавние ЗНИ/требования → дочерние задачи `Роль - Активность` → часы по дням из истории TFS и **Completed Work**
+- Подтягивание списаний (`POST /api/timesheet/sync`) по той же схеме, что сетка **/track**: ваши ЗНИ/требования → дочерние задачи «Роль — активность» → часы по дням из **System.History** в TFS (только ваши ревизии)
 
 ## Архитектура
 
@@ -44,7 +44,7 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 - `POST /api/auth/login` — вход
 - `GET /api/work-items/search?q=` — поиск
 - `GET /api/timesheet?start=&view=week|month` — табель из БД (быстро; `sync=true` — с TFS, есть TTL-кэш 10 мин)
-- `POST /api/timesheet/sync?start=&view=week|month&force=true` — подтяжка из TFS (кнопка «Из TFS»)
+- `POST /api/timesheet/sync?start=&view=week|month&force=true` — подтяжка (сетка /track через TFS API)
 - `GET /api/calendar?year=&month=` — календарь
 - `POST /api/time-entries` — списание времени
 

@@ -45,7 +45,7 @@ class AuthStatusOut(ApiModel):
     authenticated: bool
     tfs_display_name: str | None = None
     tfs_unique_name: str | None = None
-    oscar_sync_enabled: bool = False
+    tracking_stream_enabled: bool = False
 
 
 class WorkItemOut(ApiModel):
@@ -177,6 +177,7 @@ class TimesheetSyncOut(ApiModel):
     cached: bool = False
     source: str | None = None
     message: str | None = None
+    stream_ok: bool | None = None
 
 
 class RecentEntryOut(ApiModel):

@@ -5,6 +5,7 @@ from app.time_sync import (
     _history_increment_text,
     aggregate_slices_for_task,
     filter_updates_for_sync,
+    merge_slices_by_day,
     parse_update_time_slices,
     update_revised_by_current_user,
     work_item_assigned_to_current_user,
@@ -51,6 +52,24 @@ def _pat_user_token_sets() -> tuple[set[str], set[str]]:
         ),
     )
     return auth.identity_match_tokens(), auth.identity_strong_tokens()
+
+
+def test_merge_slices_by_day() -> None:
+    slices = parse_update_time_slices(
+        _update_with_author(
+            rev=1,
+            revised_date="2026-06-04T10:00:00Z",
+            author_display="Петров",
+            author_unique="MAIN\\petrov",
+            fields={"System.History": {"newValue": "2026-06-01: +8ч\n2026-06-03: +2ч"}},
+        ),
+        tracking_work_item_id=1,
+    )
+    daily = merge_slices_by_day(
+        slices, period_start=date(2026, 6, 1), period_end=date(2026, 6, 7)
+    )
+    assert daily[date(2026, 6, 1)] == 8.0
+    assert daily[date(2026, 6, 3)] == 2.0
 
 
 def test_parse_history_lines() -> None:

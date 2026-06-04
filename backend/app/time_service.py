@@ -99,8 +99,11 @@ def owner_unique_name_for(auth: TfsAuth) -> str | None:
 
 
 def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
-    """Ручные списания в аккаунте — свои; импорт TFS — только с вашим owner."""
+    """Ручные списания в аккаунте — свои; stream — доверяем аккаунту; TFS history — по owner."""
     if not entry.tfs_sync_key:
+        return True
+    key = entry.tfs_sync_key
+    if key.startswith(("stream:", "oscar:", "grid:")):
         return True
     owner = owner_unique_name_for(auth)
     if not owner:
@@ -117,10 +120,16 @@ def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[Tim
 
 def entry_ownership_clause(auth: TfsAuth):
     owner = owner_unique_name_for(auth)
+    stream_keys = or_(
+        TimeEntry.tfs_sync_key.like("stream:%"),
+        TimeEntry.tfs_sync_key.like("oscar:%"),
+        TimeEntry.tfs_sync_key.like("grid:%"),
+    )
     if not owner:
-        return TimeEntry.tfs_sync_key.is_(None)
+        return or_(TimeEntry.tfs_sync_key.is_(None), stream_keys)
     return or_(
         TimeEntry.tfs_sync_key.is_(None),
+        stream_keys,
         func.lower(TimeEntry.owner_unique_name) == owner,
     )
 

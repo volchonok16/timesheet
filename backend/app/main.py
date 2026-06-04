@@ -135,7 +135,7 @@ def auth_status(auth: TfsAuth = Depends(require_tfs_auth)) -> AuthStatusOut:
         authenticated=True,
         tfs_display_name=auth.tfs_display_name,
         tfs_unique_name=auth.tfs_unique_name,
-        oscar_sync_enabled=bool(settings.oscar_sync_enabled and settings.oscar_api_base_url),
+        tracking_stream_enabled=False,
     )
 
 
@@ -259,7 +259,7 @@ async def repair_timesheet_data(
     db: Session = Depends(get_db),
     x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
 ) -> TimesheetSyncOut:
-    """Сбросить все импорты из TFS и пересобрать текущую неделю только для владельца PAT."""
+    """Пересобрать текущую неделю (stream + TFS)."""
     start = week_start(date.today())
     try:
         payload = await sync_time_from_tfs(
@@ -272,7 +272,7 @@ async def repair_timesheet_data(
         )
         return TimesheetSyncOut(**payload)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"TFS repair: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Repair: {exc}") from exc
 
 
 @app.get("/api/timesheet", response_model=TimesheetOut)
