@@ -15,7 +15,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 Nginx в Docker проксирует frontend (`/`) и API (`/api`). Postgres на хосте: `localhost:30433`.
 
-Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [deploy/LINUX.md](deploy/LINUX.md) и [deploy/DEPLOY.md](deploy/DEPLOY.md).
+Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [deploy/LINUX.md](deploy/LINUX.md).
+
+На одном VPS с **pallink.fun** (Ganta/Roadmap): [deploy/MULTI-DOMAIN.md](deploy/MULTI-DOMAIN.md) — nginx pallink только из репозитория **ganta**.
 
 ## Что уже работает
 
