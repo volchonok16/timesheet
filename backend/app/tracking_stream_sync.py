@@ -14,7 +14,6 @@ from app.config import settings
 from app.db import TimeEntry
 from app.http_auth import auth_attempts, build_http_auth
 from app.tfs_auth import TfsAuth
-from app.tfs_client import TfsClient
 from app.time_service import (
     owner_unique_name_for,
     parse_tracking_title,
@@ -239,15 +238,16 @@ async def try_sync_from_track_stream(
             "cached": False,
             "source": "stream",
             "stream_ok": False,
-            "message": "Stream пустой — разбор TFS",
+            "message": (
+                f"Oscar /track пуст за неделю с {period_start.isoformat()} "
+                "(проверьте VPN и PAT на oscar)"
+            ),
         }
 
-    if force:
-        purged = purge_all_stream_entries(db, auth)
-    else:
-        purged = purge_stream_entries(
-            db, auth, period_start=period_start, period_end=end
-        )
+    # Как /track в Oscar: только выбранная неделя (пн–вс), без полной истории TFS.
+    purged = purge_stream_entries(
+        db, auth, period_start=period_start, period_end=end
+    )
 
     existing_keys = load_existing_sync_keys(
         db, auth, period_start=period_start, period_end=end
@@ -256,9 +256,7 @@ async def try_sync_from_track_stream(
     skipped = 0
     parents_seen: set[int] = set()
 
-    tfs_client = TfsClient(auth)
-    try:
-        for row in stream_rows:
+    for row in stream_rows:
             for entry_date, hours in row.daily_hours.items():
                 sync_key = _stream_sync_key(row.task_id, entry_date)
                 if sync_key in existing_keys:
@@ -298,8 +296,6 @@ async def try_sync_from_track_stream(
                         "completedWork": 0,
                     },
                 )
-    finally:
-        await tfs_client.close()
 
     mark_synced(db, auth, period_start=period_start, view=view)
     db.commit()

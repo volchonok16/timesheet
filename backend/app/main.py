@@ -261,7 +261,7 @@ async def repair_timesheet_data(
     db: Session = Depends(get_db),
     x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
 ) -> TimesheetSyncOut:
-    """Пересобрать текущую неделю (stream + TFS)."""
+    """Пересобрать текущую неделю из Oscar /track (delta[7]), без WIQL по TFS."""
     start = week_start(date.today())
     try:
         payload = await sync_time_from_tfs(

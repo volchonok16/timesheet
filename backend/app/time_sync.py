@@ -667,6 +667,24 @@ async def sync_time_from_tfs(
     stream_payload = await try_sync_from_track_stream(
         db, auth, period_start=period_start, view=view, force=force
     )
+    if settings.tracking_stream_enabled and settings.tracking_stream_base_url:
+        if session_id and auth.identity_match_tokens():
+            update_session(session_id, auth)
+        if stream_payload is None:
+            return {
+                "imported": 0,
+                "skipped": 0,
+                "tasks_scanned": 0,
+                "purged": 0,
+                "period_start": period_start,
+                "period_end": end,
+                "cached": False,
+                "source": "stream",
+                "stream_ok": False,
+                "message": "Укажите логин TFS при входе (нужен для Oscar /track).",
+            }
+        return stream_payload
+
     if stream_payload is not None and int(stream_payload.get("imported") or 0) > 0:
         if session_id and auth.identity_match_tokens():
             update_session(session_id, auth)
