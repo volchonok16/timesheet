@@ -652,10 +652,10 @@ async def sync_time_from_tfs(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Сетка недели из TFS (как /track в Oscar по смыслу): дочерние «Роль — активность»,
-    часы по дням пн–вс из History/Completed Work. Запросов в Oscar нет.
+    Сетка недели из TFS: tsapi ListDelta (PeriodDate + Duration), как вкладка «Время».
     """
     from app.auth_service import ensure_auth_identity
+    from app.tsapi_sync import sync_from_tsapi
 
     end = period_end(period_start, view)
 
@@ -666,6 +666,25 @@ async def sync_time_from_tfs(
             update_session(session_id, auth)
     finally:
         await identity_client.close()
+
+    if settings.tfs_tsapi_enabled:
+        client = TfsClient(auth)
+        try:
+            user_tokens, user_strong_tokens = await resolve_current_user_tokens(client, auth)
+        finally:
+            await client.close()
+        payload = await sync_from_tsapi(
+            db,
+            auth,
+            period_start=period_start,
+            view=view,
+            force=force,
+            user_tokens=user_tokens,
+            user_strong_tokens=user_strong_tokens,
+        )
+        if session_id and auth.identity_match_tokens():
+            update_session(session_id, auth)
+        return payload
 
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
         return {

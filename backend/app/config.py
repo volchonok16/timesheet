@@ -36,6 +36,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TRACKING_STREAM_ENABLED", "OSCAR_SYNC_ENABLED"),
     )
 
+    tfs_tsapi_enabled: bool = Field(default=True, alias="TFS_TSAPI_ENABLED")
+    tfs_tsapi_base_url: str | None = Field(default=None, alias="TFS_TSAPI_BASE_URL")
+
     task_type_name: str = Field(default="Задача", alias="TFS_TASK_TYPE")
     requirement_type_name: str = Field(default="Требование", alias="TFS_REQUIREMENT_TYPE")
     change_request_type_name: str = Field(default="Запрос на изменение", alias="TFS_CHANGE_REQUEST_TYPE")

@@ -112,7 +112,7 @@ def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
     if not entry.tfs_sync_key:
         return True
     key = entry.tfs_sync_key
-    if key.startswith(("stream:", "oscar:", "grid:")):
+    if key.startswith(("stream:", "oscar:", "grid:", "tsapi:")):
         return True
     owner = owner_unique_name_for(auth)
     if not owner:
@@ -133,6 +133,7 @@ def entry_ownership_clause(auth: TfsAuth):
         TimeEntry.tfs_sync_key.like("stream:%"),
         TimeEntry.tfs_sync_key.like("oscar:%"),
         TimeEntry.tfs_sync_key.like("grid:%"),
+        TimeEntry.tfs_sync_key.like("tsapi:%"),
     )
     if not owner:
         return or_(TimeEntry.tfs_sync_key.is_(None), stream_keys)
@@ -453,6 +454,30 @@ async def log_time_entry(
             cost_project=resolved_cost_project,
         )
 
+        from app.tfs_auth import tfs_login_unique_name
+        from app.tfs_tsapi import TfsTsapiClient
+
+        tsapi_user = tfs_login_unique_name(auth) or owner_unique_name_for(auth)
+        tsapi_saved = False
+        if settings.tfs_tsapi_enabled and tsapi_user:
+            minutes = int(round(amount * 60))
+            tsapi = TfsTsapiClient(auth)
+            try:
+                await tsapi.save_delta(
+                    work_item_id=tracking_id,
+                    period_date=entry_date,
+                    duration_minutes=minutes,
+                    user_id=tsapi_user,
+                    comment=comment,
+                )
+                tsapi_saved = True
+            except Exception as exc:
+                raise ValueError(
+                    f"Не удалось записать списание в TFS «Время» (tsapi): {exc}"
+                ) from exc
+            finally:
+                await tsapi.close()
+
         entry = TimeEntry(
             account_key=auth.account_key,
             parent_work_item_id=parent_work_item_id,
@@ -469,14 +494,19 @@ async def log_time_entry(
         db.commit()
         db.refresh(entry)
 
-        total_for_task = db.scalar(
-            select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
-                TimeEntry.account_key == auth.account_key,
-                TimeEntry.tracking_work_item_id == tracking_id,
+        if not settings.tfs_tsapi_enabled:
+            total_for_task = db.scalar(
+                select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
+                    TimeEntry.account_key == auth.account_key,
+                    TimeEntry.tracking_work_item_id == tracking_id,
+                )
             )
-        )
-        history = f"{entry_date.isoformat()}: {'-' if subtract else '+'}{amount}ч — {comment or role}"
-        await client.update_completed_work(tracking_id, float(total_for_task or 0), comment=history)
+            history = (
+                f"{entry_date.isoformat()}: {'-' if subtract else '+'}{amount}ч — {comment or role}"
+            )
+            await client.update_completed_work(
+                tracking_id, float(total_for_task or 0), comment=history
+            )
     finally:
         await client.close()
 
