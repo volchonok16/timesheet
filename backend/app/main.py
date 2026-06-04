@@ -1,5 +1,5 @@
-import asyncio
 from datetime import date
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +40,7 @@ from app.time_service import (
     list_recent_entries,
     log_time_entry,
     month_start,
+    parent_items_from_recent,
     timesheet_parent_ids,
     touch_recent,
     week_start,
@@ -272,6 +273,10 @@ async def get_timesheet(
         default=False,
         description="Подтянуть из TFS (с TTL-кэшем; для быстрой загрузки оставьте false)",
     ),
+    enrich: bool = Query(
+        default=False,
+        description="Обогатить табель из TFS (медленно); по умолчанию только БД и кэш",
+    ),
     auth: TfsAuth = Depends(require_tfs_auth),
     db: Session = Depends(get_db),
 ) -> TimesheetOut:
@@ -291,22 +296,21 @@ async def get_timesheet(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
 
-    client = TfsClient(auth)
-    try:
-        parent_ids = timesheet_parent_ids(db, auth, period_start=start, view=view)
-        if parent_ids:
+    parent_ids = timesheet_parent_ids(db, auth, period_start=start, view=view)
+    children_by_parent: dict[int, list[dict[str, Any]]] = {}
+
+    if enrich and parent_ids:
+        client = TfsClient(auth)
+        try:
             items = await client.get_work_items_batch(parent_ids)
             parent_items = [client.normalize_item(item) for item in items]
-            child_lists = await asyncio.gather(*(client.get_child_tasks(pid) for pid in parent_ids))
-            children_by_parent = {
-                pid: [child for child in children if child.get("kind") == "task"]
-                for pid, children in zip(parent_ids, child_lists)
-            }
-        else:
-            parent_items = []
-            children_by_parent = {}
-    finally:
-        await client.close()
+            for row in parent_items:
+                touch_recent(db, auth, row)
+            db.commit()
+        finally:
+            await client.close()
+    else:
+        parent_items = parent_items_from_recent(db, auth, parent_ids)
 
     return build_timesheet(
         db,

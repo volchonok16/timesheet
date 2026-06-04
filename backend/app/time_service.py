@@ -92,6 +92,54 @@ def total_hours(hours: float, minutes: int) -> float:
     return round(hours + minutes / 60, 2)
 
 
+def parent_items_from_recent(
+    db: Session,
+    auth: TfsAuth,
+    parent_ids: list[int],
+) -> list[dict[str, Any]]:
+    """Метаданные родителей из локального кэша — без запросов к TFS."""
+    if not parent_ids:
+        return []
+    rows = db.scalars(
+        select(RecentWorkItem).where(
+            RecentWorkItem.account_key == auth.account_key,
+            RecentWorkItem.work_item_id.in_(parent_ids),
+        )
+    ).all()
+    by_id = {row.work_item_id: row for row in rows}
+    tfs_base = f"{auth.base_url.rstrip('/')}/{auth.project}/_workitems/edit"
+    items: list[dict[str, Any]] = []
+    for parent_id in parent_ids:
+        row = by_id.get(parent_id)
+        if row:
+            items.append(
+                {
+                    "id": parent_id,
+                    "title": row.title,
+                    "workItemType": row.work_item_type,
+                    "state": row.state,
+                    "areaPath": row.area_path,
+                    "kind": row.kind,
+                    "tfsUrl": f"{tfs_base}/{parent_id}",
+                    "completedWork": 0,
+                }
+            )
+        else:
+            items.append(
+                {
+                    "id": parent_id,
+                    "title": f"#{parent_id}",
+                    "workItemType": "",
+                    "state": "",
+                    "areaPath": "",
+                    "kind": "other",
+                    "tfsUrl": f"{tfs_base}/{parent_id}",
+                    "completedWork": 0,
+                }
+            )
+    return items
+
+
 def timesheet_parent_ids(
     db: Session,
     auth: TfsAuth,
@@ -413,6 +461,19 @@ def build_timesheet(
 
     parent_map = {int(item["id"]): item for item in parent_items}
     seen_parents = set(by_parent.keys()) | set(parent_map.keys())
+    tracking_by_parent: dict[int, set[int]] = defaultdict(set)
+    if seen_parents:
+        for parent_id, tracking_id in db.execute(
+            select(TimeEntry.parent_work_item_id, TimeEntry.tracking_work_item_id)
+            .where(
+                TimeEntry.account_key == auth.account_key,
+                TimeEntry.parent_work_item_id.in_(seen_parents),
+                TimeEntry.tracking_work_item_id.isnot(None),
+            )
+            .distinct()
+        ):
+            if tracking_id is not None:
+                tracking_by_parent[int(parent_id)].add(int(tracking_id))
 
     for parent_id in sorted(seen_parents):
         item = parent_map.get(parent_id)
@@ -434,17 +495,7 @@ def build_timesheet(
         parent_entries = by_parent.get(parent_id, [])
         tracking_map: dict[tuple[str, str, int | None], TrackingRowOut] = {}
 
-        known_tracking_ids = {
-            int(tracking_id)
-            for tracking_id in db.scalars(
-                select(TimeEntry.tracking_work_item_id).where(
-                    TimeEntry.account_key == auth.account_key,
-                    TimeEntry.parent_work_item_id == parent_id,
-                    TimeEntry.tracking_work_item_id.isnot(None),
-                ).distinct()
-            ).all()
-            if tracking_id is not None
-        }
+        known_tracking_ids = set(tracking_by_parent.get(parent_id, set()))
 
         for entry in parent_entries:
             key = (entry.role, entry.activity, entry.tracking_work_item_id)

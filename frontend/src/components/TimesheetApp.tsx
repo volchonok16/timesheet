@@ -22,6 +22,8 @@ import TimeEntryModal from './TimeEntryModal'
 import WeekGrid from './WeekGrid'
 
 const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
+const BACKGROUND_SYNC_DELAY_MS = 45 * 1000
+const REPAIR_DELAY_MS = 12 * 1000
 const DATA_REPAIR_KEY = 'timesheet-data-repair-v2'
 
 type Props = {
@@ -90,18 +92,28 @@ export default function TimesheetApp({ onLogout }: Props) {
     setStatsLoading(false)
   }
 
-  const loadTimesheet = useCallback(async () => {
-    setLoading(true)
+  const loadTimesheet = useCallback(async (options?: { enrich?: boolean; silent?: boolean }) => {
+    const enrich = options?.enrich ?? false
+    const silent = options?.silent ?? false
+    if (!silent) {
+      setLoading(true)
+    }
     setError(null)
     try {
       const start = toIsoDate(periodStart)
-      const payload = await getJson<Timesheet>(`/api/timesheet?start=${start}&view=week&sync=false`)
+      const payload = await getJson<Timesheet>(
+        `/api/timesheet?start=${start}&view=week&sync=false&enrich=${enrich ? 'true' : 'false'}`,
+      )
       setTimesheet(payload)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить табель')
-      setTimesheet(null)
+      if (!silent) {
+        setError(err instanceof Error ? err.message : 'Не удалось загрузить табель')
+        setTimesheet(null)
+      }
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [periodStart])
 
@@ -148,10 +160,9 @@ export default function TimesheetApp({ onLogout }: Props) {
         }
         const result = (await response.json()) as { imported?: number; cached?: boolean }
         sessionStorage.setItem(syncStorageKey(start, syncView), String(Date.now()))
-        if (!result.cached && (result.imported ?? 0) > 0) {
-          setRefreshKey((value) => value + 1)
-        } else if (force) {
-          setRefreshKey((value) => value + 1)
+        if (!result.cached && ((result.imported ?? 0) > 0 || force)) {
+          void loadStats()
+          void loadTimesheet({ enrich: false, silent: true })
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания из TFS')
@@ -172,22 +183,26 @@ export default function TimesheetApp({ onLogout }: Props) {
       return
     }
     let cancelled = false
-    void (async () => {
-      try {
-        const response = await apiFetch('/api/timesheet/repair', { method: 'POST' })
-        if (!response.ok || cancelled) {
-          return
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const response = await apiFetch('/api/timesheet/repair', { method: 'POST' })
+          if (!response.ok || cancelled) {
+            return
+          }
+          sessionStorage.setItem(DATA_REPAIR_KEY, '1')
+          void loadStats()
+          void loadTimesheet({ enrich: false, silent: true })
+        } catch {
+          /* repair в фоне */
         }
-        sessionStorage.setItem(DATA_REPAIR_KEY, '1')
-        setRefreshKey((value) => value + 1)
-      } catch {
-        /* одноразовый repair не должен ломать UI */
-      }
-    })()
+      })()
+    }, REPAIR_DELAY_MS)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
-  }, [])
+  }, [loadStats, loadTimesheet])
 
   useEffect(() => {
     void loadStats()
@@ -198,7 +213,17 @@ export default function TimesheetApp({ onLogout }: Props) {
       void loadCalendar()
       return
     }
-    void loadTimesheet()
+    let cancelled = false
+    void (async () => {
+      await loadTimesheet({ enrich: false })
+      if (cancelled) {
+        return
+      }
+      void loadTimesheet({ enrich: true, silent: true })
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [loadCalendar, loadTimesheet, view, refreshKey])
 
   useEffect(() => {
@@ -212,27 +237,31 @@ export default function TimesheetApp({ onLogout }: Props) {
       return
     }
     let cancelled = false
-    void (async () => {
-      try {
-        const response = await apiFetch(`/api/timesheet/sync?start=${start}&view=week`, {
-          method: 'POST',
-        })
-        if (!response.ok || cancelled) {
-          return
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const response = await apiFetch(`/api/timesheet/sync?start=${start}&view=week`, {
+            method: 'POST',
+          })
+          if (!response.ok || cancelled) {
+            return
+          }
+          sessionStorage.setItem(key, String(Date.now()))
+          const result = (await response.json()) as { imported?: number; cached?: boolean }
+          if (!cancelled && !result.cached && (result.imported ?? 0) > 0) {
+            void loadStats()
+            void loadTimesheet({ enrich: false, silent: true })
+          }
+        } catch {
+          /* фоновая синхронизация не должна ронять UI */
         }
-        sessionStorage.setItem(key, String(Date.now()))
-        const result = (await response.json()) as { imported?: number; cached?: boolean }
-        if (!cancelled && !result.cached && (result.imported ?? 0) > 0) {
-          setRefreshKey((value) => value + 1)
-        }
-      } catch {
-        /* фоновая синхронизация не должна ронять UI */
-      }
-    })()
+      })()
+    }, BACKGROUND_SYNC_DELAY_MS)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
-  }, [periodStart, view])
+  }, [loadStats, loadTimesheet, periodStart, view])
 
   const shiftPeriod = (delta: number) => {
     if (isCalendarView(view)) {
