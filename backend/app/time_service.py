@@ -44,11 +44,20 @@ def tracking_title(role: str, activity: str) -> str:
     return f"{role} - {activity}"
 
 
+def normalize_tracking_title(title: str) -> str:
+    """TFS иногда отдаёт «Роль — активность» с длинным тире вместо « - »."""
+    normalized = title
+    for sep in (" \u2014 ", " \u2013 ", " — ", " – "):
+        normalized = normalized.replace(sep, " - ")
+    return normalized
+
+
 def parse_tracking_title(title: str) -> tuple[str, str]:
-    if " - " in title:
-        role, activity = title.split(" - ", 1)
+    normalized = normalize_tracking_title(title)
+    if " - " in normalized:
+        role, activity = normalized.split(" - ", 1)
         return role.strip(), activity.strip()
-    return "", title.strip()
+    return "", normalized.strip()
 
 
 ROLE_LABELS = {role.label for role in ROLES} | {role.id for role in ROLES}

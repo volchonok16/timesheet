@@ -76,6 +76,7 @@ async def _collect_pending_tsapi_entries(
     skipped = 0
     tsapi_errors: list[str] = []
     deltas_in_period = 0
+    deltas_total = 0
     deltas_user_mismatch = 0
 
     for target in targets:
@@ -94,6 +95,7 @@ async def _collect_pending_tsapi_entries(
 
         role, activity = _title_for_target(titles_by_id, target.task_id)
         for row in deltas:
+            deltas_total += 1
             if row.period_date < period_start or row.period_date > period_end:
                 continue
             deltas_in_period += 1
@@ -112,6 +114,7 @@ async def _collect_pending_tsapi_entries(
 
     stats = {
         "deltas_in_period": deltas_in_period,
+        "deltas_total": deltas_total,
         "deltas_user_mismatch": deltas_user_mismatch,
         "tsapi_errors": tsapi_errors,
     }
@@ -292,6 +295,7 @@ async def sync_from_tsapi(
 
     tsapi_errors = scan_stats.get("tsapi_errors") or []
     deltas_in_period = int(scan_stats.get("deltas_in_period") or 0)
+    deltas_total = int(scan_stats.get("deltas_total") or 0)
     message: str | None = None
     if imported > 0:
         message = None
@@ -299,6 +303,10 @@ async def sync_from_tsapi(
         message = (
             "TFS tsapi: не удалось прочитать «Время» (проверьте PAT и логин T2RU\\user). "
             f"Пример: {tsapi_errors[0]}"
+        )
+    elif deltas_in_period == 0 and deltas_total > 0:
+        message = (
+            "TFS «Время»: есть списания, но не в выбранной неделе (смотрите PeriodDate в TFS)."
         )
     elif deltas_in_period == 0:
         message = (
@@ -316,6 +324,7 @@ async def sync_from_tsapi(
         "purged": purged,
         "removed_dupes": removed_dupes,
         "deltas_in_period": deltas_in_period,
+        "deltas_total": deltas_total,
         "period_start": period_start,
         "period_end": end,
         "cached": False,

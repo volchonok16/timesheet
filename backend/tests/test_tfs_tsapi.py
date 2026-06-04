@@ -1,11 +1,13 @@
 from datetime import date
 
+from app.http_auth import ad_unique_name_aliases, pat_http_auth_candidates
 from app.tfs_auth import TfsAuth
 from app.tfs_tsapi import (
     delta_user_matches_auth,
     parse_list_delta_payload,
     resolve_tsapi_base_url,
 )
+from app.time_service import normalize_tracking_title, parse_tracking_title
 
 # Обезличенные фикстуры (не реальные сотрудники).
 SAMPLE_USER_T2 = "T2RU\\sample.user"
@@ -82,6 +84,7 @@ def test_delta_user_matches_login_domain_alias() -> None:
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
         username=SAMPLE_USER_TELE2,
+        tfs_unique_name=SAMPLE_USER_TELE2,
     )
     assert delta_user_matches_auth(SAMPLE_USER_T2, auth)
 
@@ -95,6 +98,29 @@ def test_delta_user_matches_email_expands_t2ru() -> None:
     tokens = auth.identity_match_tokens()
     assert "t2ru\\sample.user" in tokens
     assert delta_user_matches_auth(SAMPLE_USER_T2, auth)
+
+
+def test_pat_candidates_prefers_named_logins_and_t2ru_alias() -> None:
+    auth = TfsAuth(
+        base_url="https://tfs.t2.ru/tfs/Main",
+        project="Tele2",
+        pat="secret",
+        username=SAMPLE_USER_TELE2,
+        tfs_unique_name=SAMPLE_USER_TELE2,
+    )
+    aliases = ad_unique_name_aliases(SAMPLE_USER_TELE2)
+    assert SAMPLE_USER_TELE2 in aliases
+    assert "sample.user" in aliases
+    assert SAMPLE_USER_T2 in aliases
+    pairs = pat_http_auth_candidates(auth)
+    assert pairs[-1] == ("", "secret")
+    assert (SAMPLE_USER_T2, "secret") in pairs
+    assert pairs[0] != ("", "secret")
+
+
+def test_normalize_tracking_title_em_dash() -> None:
+    assert parse_tracking_title("Аналитик — Прочие") == ("Аналитик", "Прочие")
+    assert normalize_tracking_title("Dev — fix") == "Dev - fix"
 
 
 def test_delta_user_rejects_other_user() -> None:

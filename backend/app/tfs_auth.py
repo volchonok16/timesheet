@@ -81,10 +81,18 @@ class TfsAuth:
         return tokens
 
     def identity_match_tokens(self) -> set[str]:
-        tokens = self.tfs_identity().match_tokens()
-        if self.username:
-            from app.http_auth import expand_login_usernames
+        from app.http_auth import ad_unique_name_aliases, expand_login_usernames
 
+        tokens = self.tfs_identity().match_tokens()
+        if self.tfs_unique_name:
+            for candidate in ad_unique_name_aliases(self.tfs_unique_name):
+                value = candidate.casefold().strip()
+                if not value:
+                    continue
+                tokens.add(value)
+                if "\\" in value:
+                    tokens.add(value.split("\\")[-1])
+        if self.username:
             for candidate in expand_login_usernames(self.username, self.domain):
                 value = candidate.casefold().strip()
                 if not value:

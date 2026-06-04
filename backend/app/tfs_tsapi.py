@@ -161,36 +161,52 @@ class TfsTsapiClient:
     async def close(self) -> None:
         await self.client.aclose()
 
+    async def _fetch_list_delta_page(
+        self,
+        *,
+        path: str,
+        params: dict[str, Any],
+        user: str,
+        pat: str,
+    ) -> list[TsapiDeltaRow]:
+        work_item_id = int(params["WI_ID"])
+        if self.auth.pat:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                auth=(user, pat),
+                headers=self.client.headers,
+                timeout=settings.tfs_timeout_seconds,
+                verify=settings.tfs_verify_tls,
+                follow_redirects=True,
+            ) as probe:
+                response = await probe.get(path, params=params)
+        else:
+            response = await self.client.get(path, params=params)
+        response.raise_for_status()
+        payload = response.json()
+        return parse_list_delta_payload(payload, work_item_id=work_item_id)
+
     async def get_work_item_deltas(
         self, work_item_id: int, *, page: int = 1, take: int = 200
     ) -> list[TsapiDeltaRow]:
         path = "/WorkItemFormTab/GetListDeltaByWorkitemIDMod"
-        params = {"WI_ID": work_item_id, "page": page, "take": take}
+        params: dict[str, Any] = {"WI_ID": work_item_id, "page": page, "take": take}
         errors: list[str] = []
         auth_pairs = pat_http_auth_candidates(self.auth) or [("", "")]
+        best: list[TsapiDeltaRow] = []
         for user, pat in auth_pairs:
             label = user or "(пустой логин)"
             try:
-                if self.auth.pat:
-                    async with httpx.AsyncClient(
-                        base_url=self.base_url,
-                        auth=(user, pat),
-                        headers=self.client.headers,
-                        timeout=settings.tfs_timeout_seconds,
-                        verify=settings.tfs_verify_tls,
-                        follow_redirects=True,
-                    ) as probe:
-                        response = await probe.get(path, params=params)
-                else:
-                    response = await self.client.get(path, params=params)
-                response.raise_for_status()
-                payload = response.json()
-                return parse_list_delta_payload(payload, work_item_id=work_item_id)
+                rows = await self._fetch_list_delta_page(
+                    path=path, params=params, user=user, pat=pat
+                )
+                if len(rows) > len(best):
+                    best = rows
             except Exception as exc:
                 errors.append(f"{label}: {exc}")
-        raise httpx.HTTPError(
-            "tsapi ListDelta: " + "; ".join(errors[:4])
-        )
+        if best or not errors:
+            return best
+        raise httpx.HTTPError("tsapi ListDelta: " + "; ".join(errors[:4]))
 
     async def save_delta(
         self,

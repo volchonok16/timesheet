@@ -21,6 +21,7 @@ from app.time_service import (
     ROLE_LABELS,
     backfill_entry_owners,
     entry_ownership_clause,
+    normalize_tracking_title,
     owner_unique_name_for,
     parse_tracking_title,
     period_end,
@@ -202,7 +203,7 @@ def entry_in_period(entry_date: date, *, period_start: date, period_end: date) -
 
 
 def is_tracking_child_item(child: dict[str, Any]) -> bool:
-    title = str(child.get("title") or "")
+    title = normalize_tracking_title(str(child.get("title") or ""))
     if " - " not in title:
         return False
     role, _activity = parse_tracking_title(title)

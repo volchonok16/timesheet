@@ -56,29 +56,60 @@ def expand_login_usernames(raw_user: str, domain: str | None = None) -> list[str
     return result
 
 
+AD_DOMAIN_ALIASES: dict[str, list[str]] = {
+    "tele2": ["T2RU", "T2"],
+    "t2": ["T2RU", "TELE2"],
+    "t2ru": ["TELE2"],
+}
+
+
+def ad_unique_name_aliases(unique_name: str) -> list[str]:
+    """TELE2\\user в сессии, ListDelta — T2RU\\user: оба варианта для Basic/PAT."""
+    raw = unique_name.strip()
+    if not raw or "\\" not in raw:
+        return [raw] if raw else []
+    domain, user = raw.split("\\", 1)
+    user = user.strip()
+    if not user:
+        return [raw]
+    result: list[str] = []
+    for value in (raw, user):
+        if value and value not in result:
+            result.append(value)
+    for alt in AD_DOMAIN_ALIASES.get(domain.casefold(), []):
+        candidate = f"{alt}\\{user}"
+        if candidate not in result:
+            result.append(candidate)
+    return result
+
+
 def pat_http_auth_candidates(auth: TfsAuth) -> list[tuple[str, str]]:
-    """On-prem TFS tsapi часто требует Basic(user, PAT), а не (:, PAT)."""
+    """On-prem TFS tsapi: Basic(user, PAT). Пустой логин — последним (часто пустой ListDelta)."""
     if not auth.pat:
         return []
     pat = auth.pat.strip()
     seen: set[tuple[str, str]] = set()
-    candidates: list[tuple[str, str]] = []
+    named: list[tuple[str, str]] = []
 
     def push(user: str) -> None:
         key = (user, pat)
         if key not in seen:
             seen.add(key)
-            candidates.append(key)
+            named.append(key)
 
-    push("")
+    if auth.tfs_unique_name:
+        for login in ad_unique_name_aliases(auth.tfs_unique_name):
+            push(login)
     for raw in (
-        auth.tfs_unique_name,
         auth.username,
         *expand_login_usernames((auth.username or "").strip(), auth.domain),
     ):
         if raw and str(raw).strip():
+            for login in ad_unique_name_aliases(str(raw).strip()):
+                push(login)
             push(str(raw).strip())
-    return candidates
+    push("")
+    return named
 
 
 def build_http_auth(auth: TfsAuth, *, use_ntlm: bool = True) -> Any | None:
