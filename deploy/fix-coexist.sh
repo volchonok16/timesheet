@@ -65,8 +65,12 @@ if GANTA_ROOT="$(find_ganta_root)"; then
   ln -sf /etc/nginx/sites-available/pallink.conf /etc/nginx/sites-enabled/pallink.conf
 
   echo "==> 3. Ganta Docker (pallink.fun)"
-  (cd "$GANTA_ROOT" && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build) || \
-    warn "Ganta compose не поднялся — проверьте $GANTA_ROOT"
+  if [[ -f "$GANTA_ROOT/.env" ]] && grep -q 'mateplace' "$GANTA_ROOT/.env" 2>/dev/null; then
+    warn "В $GANTA_ROOT/.env указан mateplace — исправьте на api.pallink.fun и пересоберите Ganta"
+  fi
+  (cd "$GANTA_ROOT" && sudo bash deploy/apply-production.sh) 2>/dev/null || \
+    (cd "$GANTA_ROOT" && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build) || \
+    warn "Ganta не поднялся — cd $GANTA_ROOT && sudo bash deploy/apply-production.sh"
 else
   echo "!!  Ganta не найден (ожидался /var/www/ganta или /var/www/roadmap)"
   echo "    Восстановите pallink вручную: proxy_pass 127.0.0.1:5173 и :8000"
