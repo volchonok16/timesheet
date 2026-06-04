@@ -94,8 +94,11 @@ def total_hours(hours: float, minutes: int) -> float:
 
 def owner_unique_name_for(auth: TfsAuth) -> str | None:
     """Канонический логин TFS (TELE2\\user) для владельца строки."""
-    raw = (auth.tfs_unique_name or auth.username or "").strip()
-    return raw.casefold() if raw else None
+    for candidate in (auth.tfs_unique_name, auth.username, auth.tfs_email):
+        raw = (candidate or "").strip()
+        if raw:
+            return raw.casefold()
+    return None
 
 
 def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:

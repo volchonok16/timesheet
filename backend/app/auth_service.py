@@ -85,6 +85,16 @@ async def resolve_working_auth(auth: TfsAuth) -> tuple[TfsAuth, str]:
     )
 
 
+async def ensure_auth_identity(client: TfsClient, auth: TfsAuth) -> TfsAuth:
+    """Дополняет сессию логином из connectionData/profile, если при входе его не было."""
+    if auth.identity_match_tokens():
+        return auth
+    identity = await client.get_authenticated_user_identity()
+    if identity:
+        return attach_tfs_identity(auth, identity)
+    return auth
+
+
 async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
     if not auth.has_credentials():
         raise HTTPException(status_code=400, detail="Укажите логин и пароль, PAT или Cookie.")
@@ -92,11 +102,18 @@ async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
     resolved, _ = await resolve_working_auth(auth)
     client = TfsClient(resolved)
     try:
-        identity = await client.get_authenticated_user_identity()
-        if identity:
-            resolved = attach_tfs_identity(resolved, identity)
+        resolved = await ensure_auth_identity(client, resolved)
     finally:
         await client.close()
+    if not resolved.identity_match_tokens():
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "TFS принял учётные данные, но не вернул идентификатор пользователя "
+                "(uniqueName / providerDisplayName). Проверьте URL коллекции "
+                "(например https://tfs.t2.ru/tfs/Main) и создайте новый PAT."
+            ),
+        )
     session_id = create_session(resolved)
     db = SessionLocal()
     try:

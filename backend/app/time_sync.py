@@ -636,15 +636,24 @@ async def sync_time_from_tfs(
     force: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.auth_service import ensure_auth_identity
     from app.tracking_stream_sync import try_sync_from_track_stream
 
     end = period_end(period_start, view)
+
+    identity_client = TfsClient(auth)
+    try:
+        auth = await ensure_auth_identity(identity_client, auth)
+        if session_id and auth.identity_match_tokens():
+            update_session(session_id, auth)
+    finally:
+        await identity_client.close()
 
     stream_payload = await try_sync_from_track_stream(
         db, auth, period_start=period_start, view=view, force=force
     )
     if stream_payload is not None and int(stream_payload.get("imported") or 0) > 0:
-        if session_id and auth.tfs_unique_name:
+        if session_id and auth.identity_match_tokens():
             update_session(session_id, auth)
         return stream_payload
 
@@ -665,14 +674,13 @@ async def sync_time_from_tfs(
     parents_touched: set[int] = set()
 
     try:
+        from app.auth_service import ensure_auth_identity as _ensure_identity
+
+        auth = await _ensure_identity(client, auth)
+        if session_id and auth.identity_match_tokens():
+            update_session(session_id, auth)
         user_tokens, user_strong_tokens = await resolve_current_user_tokens(client, auth)
-        if not auth.tfs_unique_name:
-            identity = await client.get_authenticated_user_identity()
-            if identity:
-                auth = attach_tfs_identity(auth, identity)
-                user_tokens = auth.identity_match_tokens()
-                user_strong_tokens = auth.identity_strong_tokens()
-        if not user_strong_tokens and not user_tokens:
+        if not user_tokens:
             raise ValueError(
                 "Не удалось определить пользователя TFS по PAT. Выйдите и войдите снова."
             )
@@ -847,7 +855,7 @@ async def sync_time_from_tfs(
 
         mark_synced(db, auth, period_start=period_start, view=view)
         db.commit()
-        if session_id and auth.tfs_unique_name:
+        if session_id and auth.identity_match_tokens():
             update_session(session_id, auth)
     finally:
         await client.close()
