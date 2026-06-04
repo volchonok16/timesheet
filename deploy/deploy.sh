@@ -237,6 +237,31 @@ deploy_compose() {
   "${COMPOSE[@]}" up -d --build
 }
 
+check_nginx_multi_site() {
+  if ! command -v nginx >/dev/null 2>&1; then
+    return
+  fi
+  local enabled
+  enabled="$(ls -1 /etc/nginx/sites-enabled/ 2>/dev/null || true)"
+  if [[ -n "$enabled" ]]; then
+    echo ""
+    log "Включённые сайты nginx: $enabled"
+  fi
+  if nginx -T 2>/dev/null | grep -E 'listen.*443.*default_server' | grep -qv "server_name ${DOMAIN}"; then
+    echo ""
+    warn "На 443 есть default_server у другого сайта (например pallink.fun)."
+    warn "Запросы на https://${DOMAIN} могут уходить на чужой домен."
+    warn "Откройте конфиг pallink и уберите default_server с listen 443:"
+    warn "  listen 443 ssl;   # без default_server"
+    warn "См. deploy/MULTI-DOMAIN.md"
+    nginx -T 2>/dev/null | grep -E 'listen.*443|server_name|default_server' | head -30 || true
+  fi
+  if [[ -f "$CERT_DIR/fullchain.pem" ]] \
+    && ! nginx -T 2>/dev/null | grep -q "server_name ${DOMAIN}"; then
+    warn "В nginx нет server_name ${DOMAIN} — проверьте sites-enabled/mateplace.conf"
+  fi
+}
+
 configure_nginx() {
   need_root_for_nginx
   load_env_config
@@ -262,6 +287,7 @@ configure_nginx() {
   nginx -t
   systemctl enable nginx 2>/dev/null || true
   systemctl reload nginx
+  check_nginx_multi_site
 
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow OpenSSH 2>/dev/null || true

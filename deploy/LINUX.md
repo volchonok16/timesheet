@@ -143,7 +143,15 @@ nginx (системный)
 
 ---
 
-## 7. Типичные проблемы
+## 7. Редирект на другой домен (pallink.fun и т.д.)
+
+На одном VPS несколько сайтов — см. **[deploy/MULTI-DOMAIN.md](MULTI-DOMAIN.md)**.
+
+Кратко: у **другого** сайта в nginx уберите `default_server` на `listen 443`, затем `sudo bash deploy/deploy.sh`.
+
+---
+
+## 8. Типичные проблемы
 
 **`The repository 'https://docker.com noble Release' does not have a Release file`**
 
