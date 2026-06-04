@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { apiFetch, clearSessionId, getJson } from '../api'
+import { apiFetch, clearSessionId, getJson, readApiError } from '../api'
 import type { Activity, Calendar, Role, StatsSummary, Timesheet, WorkItem } from '../types'
 import {
   addDays,
@@ -24,7 +24,7 @@ import WeekGrid from './WeekGrid'
 const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
 const BACKGROUND_SYNC_DELAY_MS = 45 * 1000
 const REPAIR_DELAY_MS = 12 * 1000
-const DATA_REPAIR_KEY = 'timesheet-data-repair-v12'
+const DATA_REPAIR_KEY = 'timesheet-data-repair-v13'
 
 type Props = {
   onLogout: () => void
@@ -197,10 +197,21 @@ export default function TimesheetApp({ onLogout }: Props) {
       void (async () => {
         try {
           const response = await apiFetch('/api/timesheet/repair', { method: 'POST' })
-          if (!response.ok || cancelled) {
+          if (cancelled) {
             return
           }
+          if (!response.ok) {
+            setError(await readApiError(response))
+            return
+          }
+          const result = (await response.json()) as {
+            imported?: number
+            message?: string
+          }
           sessionStorage.setItem(DATA_REPAIR_KEY, '1')
+          if ((result.imported ?? 0) === 0 && result.message) {
+            setError(result.message)
+          }
           void loadStats()
           void loadTimesheet({ enrich: false, silent: true })
         } catch {

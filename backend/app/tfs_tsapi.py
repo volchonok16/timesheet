@@ -111,16 +111,19 @@ def delta_user_matches_auth(delta_user: str, auth: TfsAuth) -> bool:
     tokens = auth.identity_match_tokens()
     if needle in tokens:
         return True
-    if "\\" in needle:
-        tail = needle.split("\\")[-1]
-        if tail in tokens:
+    needle_tail = needle.split("\\")[-1] if "\\" in needle else needle
+    needle_local = needle.split("@")[0] if "@" in needle else needle_tail
+    if needle_tail in tokens or needle_local in tokens:
+        return True
+    for token in tokens:
+        if "\\" in token and token.split("\\")[-1] == needle_tail:
             return True
-    if "@" in needle:
-        local = needle.split("@")[0]
-        if local in tokens:
+        if "@" in token and token.split("@")[0] == needle_local:
             return True
     login = (auth.tfs_unique_name or auth.username or "").casefold().strip()
-    return bool(login and login == needle)
+    if login and (login == needle or login.endswith(f"\\{needle_tail}")):
+        return True
+    return False
 
 
 class TfsTsapiClient:

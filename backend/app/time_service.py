@@ -51,7 +51,7 @@ def parse_tracking_title(title: str) -> tuple[str, str]:
     return "", title.strip()
 
 
-ROLE_LABELS = {role.label for role in ROLES}
+ROLE_LABELS = {role.label for role in ROLES} | {role.id for role in ROLES}
 
 
 def is_app_tracking_task(child: dict[str, Any], *, known_tracking_ids: set[int]) -> bool:
@@ -866,25 +866,20 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
     start = week_start(today)
     end = start + timedelta(days=6)
 
-    closed_ids = closed_parent_ids(db, auth)
-    week_entries = [
-        entry
-        for entry in dedupe_time_entries(
-            filter_entries_for_user(
-                list(
-                    db.scalars(
-                        select(TimeEntry).where(
-                            TimeEntry.account_key == auth.account_key,
-                            TimeEntry.entry_date >= start,
-                            TimeEntry.entry_date <= end,
-                        )
-                    ).all()
-                ),
-                auth,
-            )
+    week_entries = dedupe_time_entries(
+        filter_entries_for_user(
+            list(
+                db.scalars(
+                    select(TimeEntry).where(
+                        TimeEntry.account_key == auth.account_key,
+                        TimeEntry.entry_date >= start,
+                        TimeEntry.entry_date <= end,
+                    )
+                ).all()
+            ),
+            auth,
         )
-        if entry.parent_work_item_id not in closed_ids
-    ]
+    )
     today_hours = sum_deduped_hours(week_entries, on_date=today)
     week_hours = sum_deduped_hours(week_entries, period_start=start, period_end=end)
 

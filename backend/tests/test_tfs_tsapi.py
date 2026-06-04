@@ -67,3 +67,13 @@ def test_delta_user_matches_auth() -> None:
         tfs_unique_name="T2RU\\alexander.taraskin",
     )
     assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+
+
+def test_delta_user_matches_login_only() -> None:
+    auth = TfsAuth(
+        base_url="https://tfs.t2.ru/tfs/Main",
+        project="Tele2",
+        username="TELE2\\alexander.taraskin",
+    )
+    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)

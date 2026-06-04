@@ -633,11 +633,28 @@ async def collect_tracking_targets(
             TimeEntry.hours > 0,
             entry_ownership_clause(auth),
         )
+        .distinct()
     ).all()
     for tracking_id, parent_id in local_rows:
         if tracking_id is None or parent_id is None:
             continue
         add(int(tracking_id), int(parent_id))
+
+    if len(targets) < settings.tfs_sync_max_tasks:
+        history_rows = db.execute(
+            select(TimeEntry.tracking_work_item_id, TimeEntry.parent_work_item_id)
+            .where(
+                TimeEntry.account_key == auth.account_key,
+                TimeEntry.tracking_work_item_id.isnot(None),
+                entry_ownership_clause(auth),
+            )
+            .distinct()
+            .limit(settings.tfs_sync_max_tasks * 2)
+        ).all()
+        for tracking_id, parent_id in history_rows:
+            if tracking_id is None or parent_id is None:
+                continue
+            add(int(tracking_id), int(parent_id))
 
     return targets[: settings.tfs_sync_max_tasks]
 

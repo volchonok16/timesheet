@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import TimeEntry
+from app.db import AccountSyncState, TimeEntry
 from app.tfs_auth import TfsAuth
 from app.tfs_client import TfsClient
-from app.tfs_tsapi import TfsTsapiClient, delta_user_matches_auth
+from app.tfs_tsapi import TfsTsapiClient, TsapiDeltaRow, delta_user_matches_auth
 from app.time_service import (
     delete_duplicate_entries_in_period,
     owner_unique_name_for,
@@ -36,6 +37,15 @@ def tsapi_sync_key(delta_id: int) -> str:
     return f"{TSAPI_SYNC_PREFIX}{delta_id}"
 
 
+@dataclass(frozen=True)
+class PendingTsapiEntry:
+    parent_id: int
+    task_id: int
+    role: str
+    activity: str
+    row: TsapiDeltaRow
+
+
 def _title_for_target(titles_by_id: dict[int, str], task_id: int) -> tuple[str, str]:
     title = titles_by_id.get(task_id) or f"#{task_id}"
     role, activity = parse_tracking_title(title)
@@ -44,6 +54,74 @@ def _title_for_target(titles_by_id: dict[int, str], task_id: int) -> tuple[str, 
     if not activity:
         activity = title
     return role, activity
+
+
+def _should_scan_tracking_task(title: str, task_id: int) -> bool:
+    if not title:
+        return True
+    return is_tracking_child_item({"id": task_id, "title": title, "kind": "task"})
+
+
+async def _collect_pending_tsapi_entries(
+    *,
+    targets: list,
+    titles_by_id: dict[int, str],
+    tsapi: TfsTsapiClient,
+    auth: TfsAuth,
+    period_start: date,
+    period_end: date,
+) -> tuple[list[PendingTsapiEntry], int, int]:
+    pending: list[PendingTsapiEntry] = []
+    tasks_scanned = 0
+    skipped = 0
+
+    for target in targets:
+        title = titles_by_id.get(target.task_id, "")
+        if title and not _should_scan_tracking_task(title, target.task_id):
+            skipped += 1
+            continue
+        tasks_scanned += 1
+        try:
+            deltas = await tsapi.get_work_item_deltas(target.task_id)
+        except Exception:
+            skipped += 1
+            continue
+
+        role, activity = _title_for_target(titles_by_id, target.task_id)
+        for row in deltas:
+            if not delta_user_matches_auth(row.user_id, auth):
+                continue
+            if row.period_date < period_start or row.period_date > period_end:
+                continue
+            pending.append(
+                PendingTsapiEntry(
+                    parent_id=target.parent_id,
+                    task_id=target.task_id,
+                    role=role,
+                    activity=activity,
+                    row=row,
+                )
+            )
+
+    return pending, tasks_scanned, skipped
+
+
+def _clear_sync_state(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    view: str,
+) -> None:
+    row = db.scalar(
+        select(AccountSyncState).where(
+            AccountSyncState.account_key == auth.account_key,
+            AccountSyncState.period_start == period_start,
+            AccountSyncState.view == view,
+        )
+    )
+    if row is not None:
+        db.delete(row)
 
 
 async def sync_from_tsapi(
@@ -127,66 +205,77 @@ async def sync_from_tsapi(
     finally:
         await tfs.close()
 
-    purged = purge_imported_tfs_entries(
-        db, auth, period_start=period_start, period_end=end
-    )
+    tsapi = TfsTsapiClient(auth)
+    try:
+        pending, tasks_scanned, skipped = await _collect_pending_tsapi_entries(
+            targets=targets,
+            titles_by_id=titles_by_id,
+            tsapi=tsapi,
+            auth=auth,
+            period_start=period_start,
+            period_end=end,
+        )
+    finally:
+        await tsapi.close()
+
+    purged = 0
+    if force and pending:
+        purged = purge_imported_tfs_entries(
+            db, auth, period_start=period_start, period_end=end
+        )
+    elif force and not pending:
+        _clear_sync_state(db, auth, period_start=period_start, view=view)
+        db.commit()
+        return {
+            "imported": 0,
+            "skipped": skipped,
+            "tasks_scanned": tasks_scanned,
+            "purged": 0,
+            "period_start": period_start,
+            "period_end": end,
+            "cached": False,
+            "source": "tsapi",
+            "message": (
+                "TFS «Время»: за неделю нет ваших ListDelta (PeriodDate). "
+                "Старые строки в табеле не удалены."
+            ),
+        }
+
     existing_keys = load_existing_sync_keys(
         db, auth, period_start=period_start, period_end=end
     )
 
     imported = 0
-    skipped = 0
-    tasks_scanned = 0
-    tsapi = TfsTsapiClient(auth)
-    try:
-        for target in targets:
-            title = titles_by_id.get(target.task_id, "")
-            if title and not is_tracking_child_item(
-                {"id": target.task_id, "title": title, "kind": "task"}
-            ):
-                skipped += 1
-                continue
-            tasks_scanned += 1
-            try:
-                deltas = await tsapi.get_work_item_deltas(target.task_id)
-            except Exception:
-                skipped += 1
-                continue
-
-            role, activity = _title_for_target(titles_by_id, target.task_id)
-            for row in deltas:
-                if not delta_user_matches_auth(row.user_id, auth):
-                    continue
-                if row.period_date < period_start or row.period_date > end:
-                    continue
-                sync_key = tsapi_sync_key(row.delta_id)
-                if sync_key in existing_keys:
-                    skipped += 1
-                    continue
-                db.add(
-                    TimeEntry(
-                        account_key=auth.account_key,
-                        parent_work_item_id=target.parent_id,
-                        tracking_work_item_id=target.task_id,
-                        role=role,
-                        activity=activity,
-                        entry_date=row.period_date,
-                        hours=row.hours,
-                        comment=row.comment,
-                        cost_project=None,
-                        tfs_sync_key=sync_key,
-                        owner_unique_name=owner_key,
-                    )
-                )
-                existing_keys.add(sync_key)
-                imported += 1
-    finally:
-        await tsapi.close()
+    for item in pending:
+        sync_key = tsapi_sync_key(item.row.delta_id)
+        if sync_key in existing_keys:
+            skipped += 1
+            continue
+        db.add(
+            TimeEntry(
+                account_key=auth.account_key,
+                parent_work_item_id=item.parent_id,
+                tracking_work_item_id=item.task_id,
+                role=item.role,
+                activity=item.activity,
+                entry_date=item.row.period_date,
+                hours=item.row.hours,
+                comment=item.row.comment,
+                cost_project=None,
+                tfs_sync_key=sync_key,
+                owner_unique_name=owner_key,
+            )
+        )
+        existing_keys.add(sync_key)
+        imported += 1
 
     removed_dupes = delete_duplicate_entries_in_period(
         db, auth, period_start=period_start, period_end=end
     )
-    mark_synced(db, auth, period_start=period_start, view=view)
+    if imported > 0 or not force:
+        mark_synced(db, auth, period_start=period_start, view=view)
+    else:
+        _clear_sync_state(db, auth, period_start=period_start, view=view)
     db.commit()
 
     return {
@@ -202,6 +291,10 @@ async def sync_from_tsapi(
         "message": (
             None
             if imported > 0
-            else "TFS «Время»: нет строк ListDelta за неделю (поле PeriodDate)."
+            else (
+                "TFS «Время»: нет новых строк ListDelta за неделю."
+                if not force
+                else "TFS «Время»: ListDelta за неделю пустой после пересборки."
+            )
         ),
     }
