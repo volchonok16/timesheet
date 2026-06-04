@@ -255,6 +255,56 @@ def work_item_assigned_to_current_user(
     return bool(assignee_strong & current_user_strong_tokens)
 
 
+def work_item_created_by_current_user(
+    fields: dict[str, Any],
+    *,
+    current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
+) -> bool:
+    """Задачу завели вы (как дочернюю «Аналитик — …» под требованием)."""
+    raw_creator = fields.get("System.CreatedBy")
+    creator_strong = (
+        _strong_identity_tokens(raw_creator) if isinstance(raw_creator, dict) else set()
+    )
+    if creator_strong and current_user_strong_tokens:
+        return bool(creator_strong & current_user_strong_tokens)
+    if current_user_tokens:
+        return _tokens_match(_identity_tokens_from_blob(raw_creator), current_user_tokens)
+    return False
+
+
+def work_item_owned_by_current_user(
+    fields: dict[str, Any],
+    *,
+    current_user_tokens: set[str],
+    current_user_strong_tokens: set[str],
+) -> bool:
+    """
+    Как /track в Oscar: ваша дочерняя задача списания —
+    назначена на вас, создана вами или без чужого assignee.
+    """
+    raw_assignee = fields.get("System.AssignedTo")
+    if isinstance(raw_assignee, dict) and _strong_identity_tokens(raw_assignee):
+        if not work_item_assigned_to_current_user(
+            fields,
+            current_user_tokens=current_user_tokens,
+            current_user_strong_tokens=current_user_strong_tokens,
+        ):
+            return False
+        return True
+    if work_item_created_by_current_user(
+        fields,
+        current_user_tokens=current_user_tokens,
+        current_user_strong_tokens=current_user_strong_tokens,
+    ):
+        return True
+    return work_item_assigned_to_current_user(
+        fields,
+        current_user_tokens=current_user_tokens,
+        current_user_strong_tokens=current_user_strong_tokens,
+    )
+
+
 async def resolve_current_user_tokens(
     client: TfsClient, auth: TfsAuth
 ) -> tuple[set[str], set[str]]:
@@ -475,8 +525,8 @@ async def collect_tracking_targets(
     current_user_strong_tokens: set[str],
 ) -> list[TrackingTarget]:
     """
-    Задачи «Роль — активность», где вы списывали время (@Me / ваша история в периоде).
-    Не тянем всех детей под чужими ЗНИ из «недавних».
+    Как stream в Oscar: ваши дочерние «Роль — активность» под требованием/ЗНИ,
+    где вы назначены, создали или меняли задачу; часы — из вашей History/Completed Work.
     """
     seen: set[int] = set()
     targets: list[TrackingTarget] = []
@@ -499,6 +549,12 @@ async def collect_tracking_targets(
             )
             wiql_ids.extend(
                 await client.find_tracking_tasks_assigned_to_user(
+                    unique_name=auth.tfs_unique_name,
+                    changed_since=lookback,
+                )
+            )
+            wiql_ids.extend(
+                await client.find_task_ids_created_by_user(
                     unique_name=auth.tfs_unique_name,
                     changed_since=lookback,
                 )
@@ -638,6 +694,7 @@ async def sync_time_from_tfs(
                 "System.Id",
                 "System.Title",
                 "System.AssignedTo",
+                "System.CreatedBy",
                 settings.cost_project_field,
             ],
         )
@@ -659,6 +716,12 @@ async def sync_time_from_tfs(
                 title = str(fields.get("System.Title") or f"#{task_id}")
                 if not is_tracking_child_item(
                     {"id": task_id, "title": title, "kind": "task"}
+                ):
+                    return 0, 1
+                if not work_item_owned_by_current_user(
+                    fields,
+                    current_user_tokens=user_tokens,
+                    current_user_strong_tokens=user_strong_tokens,
                 ):
                     return 0, 1
                 role, activity = parse_tracking_title(title)

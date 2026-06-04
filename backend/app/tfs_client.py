@@ -275,12 +275,16 @@ class TfsClient:
         changed_since: date,
         limit: int = 80,
     ) -> list[int]:
-        """Задачи, назначенные или изменённые текущим PAT (@Me)."""
+        """Дочерние «Роль — активность»: назначены, изменены или созданы вами (@Me)."""
         project = wiql_quote(self.project)
         task_type = wiql_quote(settings.task_type_name)
         since = changed_since.isoformat()
         ids: list[int] = []
-        for clause in ("[System.AssignedTo] = @Me", "[System.ChangedBy] = @Me"):
+        for clause in (
+            "[System.AssignedTo] = @Me",
+            "[System.ChangedBy] = @Me",
+            "[System.CreatedBy] = @Me",
+        ):
             wiql = (
                 f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
                 f"AND [System.WorkItemType] = {task_type} "
@@ -316,7 +320,11 @@ class TfsClient:
         ids: list[int] = []
         for type_name in parent_types:
             work_type = wiql_quote(type_name)
-            for clause in ("[System.AssignedTo] = @Me", "[System.ChangedBy] = @Me"):
+            for clause in (
+                "[System.AssignedTo] = @Me",
+                "[System.ChangedBy] = @Me",
+                "[System.CreatedBy] = @Me",
+            ):
                 wiql = (
                     f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
                     f"AND [System.WorkItemType] = {work_type} "
@@ -349,6 +357,26 @@ class TfsClient:
             f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
             f"AND [System.WorkItemType] = {task_type} "
             f"AND [System.AssignedTo] = {user} "
+            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        return await self._wiql_task_ids(wiql, limit=limit)
+
+    async def find_task_ids_created_by_user(
+        self,
+        *,
+        unique_name: str,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        """Задачи, которые вы создали (завели под требованием)."""
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        user = wiql_quote(unique_name.strip())
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [System.CreatedBy] = {user} "
             f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
             f"ORDER BY [System.ChangedDate] DESC"
         )

@@ -9,6 +9,8 @@ from app.time_sync import (
     parse_update_time_slices,
     update_revised_by_current_user,
     work_item_assigned_to_current_user,
+    work_item_created_by_current_user,
+    work_item_owned_by_current_user,
 )
 
 
@@ -171,6 +173,40 @@ def test_assigned_to_other_user_skipped() -> None:
         },
     }
     assert not work_item_assigned_to_current_user(
+        fields,
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
+    )
+
+
+def test_created_by_current_user() -> None:
+    tokens, strong = _pat_user_token_sets()
+    fields = {
+        "System.CreatedBy": {
+            "uniqueName": "MAIN\\petrov",
+            "displayName": "Петров",
+        },
+    }
+    assert work_item_created_by_current_user(
+        fields,
+        current_user_tokens=tokens,
+        current_user_strong_tokens=strong,
+    )
+
+
+def test_owned_by_rejects_foreign_assignee() -> None:
+    tokens, strong = _pat_user_token_sets()
+    fields = {
+        "System.AssignedTo": {
+            "uniqueName": "MAIN\\sidorov",
+            "displayName": "Сидоров",
+        },
+        "System.CreatedBy": {
+            "uniqueName": "MAIN\\petrov",
+            "displayName": "Петров",
+        },
+    }
+    assert not work_item_owned_by_current_user(
         fields,
         current_user_tokens=tokens,
         current_user_strong_tokens=strong,
