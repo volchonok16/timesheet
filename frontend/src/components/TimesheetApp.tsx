@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch, clearSessionId, getJson } from '../api'
 import type { Activity, Calendar, Role, StatsSummary, Timesheet, WorkItem } from '../types'
 import {
@@ -21,8 +21,14 @@ import StatsBanner from './StatsBanner'
 import TimeEntryModal from './TimeEntryModal'
 import WeekGrid from './WeekGrid'
 
+const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
+
 type Props = {
   onLogout: () => void
+}
+
+function syncStorageKey(start: string, view: string) {
+  return `timesheet-sync:${start}:${view}`
 }
 
 export default function TimesheetApp({ onLogout }: Props) {
@@ -50,7 +56,6 @@ export default function TimesheetApp({ onLogout }: Props) {
   const [syncing, setSyncing] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [addEntryOpen, setAddEntryOpen] = useState(false)
-
   const periodEnd = useMemo(() => addDays(periodStart, 6), [periodStart])
 
   const loadMeta = async () => {
@@ -84,26 +89,25 @@ export default function TimesheetApp({ onLogout }: Props) {
     setStatsLoading(false)
   }
 
-  const loadTimesheet = async () => {
+  const loadTimesheet = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const start = toIsoDate(periodStart)
-      const payload = await getJson<Timesheet>(`/api/timesheet?start=${start}&view=week&sync=true`)
+      const payload = await getJson<Timesheet>(`/api/timesheet?start=${start}&view=week&sync=false`)
       setTimesheet(payload)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить табель')
+      setTimesheet(null)
     } finally {
       setLoading(false)
     }
-  }
+  }, [periodStart])
 
-  const loadCalendar = async () => {
+  const loadCalendar = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const monthStart = `${periodAnchor.year}-${String(periodAnchor.month).padStart(2, '0')}-01`
-      await apiFetch(`/api/timesheet/sync?start=${monthStart}&view=month`, { method: 'POST' })
       const params = new URLSearchParams({
         scope: view,
         year: String(periodAnchor.year),
@@ -118,10 +122,44 @@ export default function TimesheetApp({ onLogout }: Props) {
       setCalendar(payload)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить календарь')
+      setCalendar(null)
     } finally {
       setLoading(false)
     }
-  }
+  }, [periodAnchor, view])
+
+  const syncFromTfs = useCallback(
+    async (force = false) => {
+      setSyncing(true)
+      setError(null)
+      try {
+        const start = isCalendarView(view)
+          ? `${periodAnchor.year}-${String(periodAnchor.month).padStart(2, '0')}-01`
+          : toIsoDate(periodStart)
+        const syncView = isCalendarView(view) ? 'month' : 'week'
+        const forceParam = force ? '&force=true' : ''
+        const response = await apiFetch(
+          `/api/timesheet/sync?start=${start}&view=${syncView}${forceParam}`,
+          { method: 'POST' },
+        )
+        if (!response.ok) {
+          throw new Error(await response.text())
+        }
+        const result = (await response.json()) as { imported?: number; cached?: boolean }
+        sessionStorage.setItem(syncStorageKey(start, syncView), String(Date.now()))
+        if (!result.cached && (result.imported ?? 0) > 0) {
+          setRefreshKey((value) => value + 1)
+        } else if (force) {
+          setRefreshKey((value) => value + 1)
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания из TFS')
+      } finally {
+        setSyncing(false)
+      }
+    },
+    [periodAnchor, periodStart, view],
+  )
 
   useEffect(() => {
     void loadMeta()
@@ -138,7 +176,40 @@ export default function TimesheetApp({ onLogout }: Props) {
       return
     }
     void loadTimesheet()
-  }, [periodStart, periodAnchor, view, refreshKey])
+  }, [loadCalendar, loadTimesheet, view, refreshKey])
+
+  useEffect(() => {
+    if (isCalendarView(view)) {
+      return
+    }
+    const start = toIsoDate(periodStart)
+    const key = syncStorageKey(start, 'week')
+    const last = Number(sessionStorage.getItem(key) || '0')
+    if (Date.now() - last < BACKGROUND_SYNC_TTL_MS) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/timesheet/sync?start=${start}&view=week`, {
+          method: 'POST',
+        })
+        if (!response.ok || cancelled) {
+          return
+        }
+        sessionStorage.setItem(key, String(Date.now()))
+        const result = (await response.json()) as { imported?: number; cached?: boolean }
+        if (!cancelled && !result.cached && (result.imported ?? 0) > 0) {
+          setRefreshKey((value) => value + 1)
+        }
+      } catch {
+        /* фоновая синхронизация не должна ронять UI */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [periodStart, view])
 
   const shiftPeriod = (delta: number) => {
     if (isCalendarView(view)) {
@@ -176,23 +247,6 @@ export default function TimesheetApp({ onLogout }: Props) {
   }
 
   const bumpRefresh = () => setRefreshKey((value) => value + 1)
-
-  const syncFromTfs = async () => {
-    setSyncing(true)
-    setError(null)
-    try {
-      const start = isCalendarView(view)
-        ? `${periodAnchor.year}-${String(periodAnchor.month).padStart(2, '0')}-01`
-        : toIsoDate(periodStart)
-      const syncView = isCalendarView(view) ? 'month' : 'week'
-      await apiFetch(`/api/timesheet/sync?start=${start}&view=${syncView}`, { method: 'POST' })
-      bumpRefresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания из TFS')
-    } finally {
-      setSyncing(false)
-    }
-  }
 
   const logout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' })
@@ -261,7 +315,8 @@ export default function TimesheetApp({ onLogout }: Props) {
               type="button"
               className="btn ghost today-btn"
               disabled={syncing}
-              onClick={() => void syncFromTfs()}
+              title="Полная подтяжка из TFS (может занять до минуты)"
+              onClick={() => void syncFromTfs(true)}
             >
               {syncing ? 'Подтягиваем…' : 'Из TFS'}
             </button>
@@ -284,15 +339,17 @@ export default function TimesheetApp({ onLogout }: Props) {
             scope={view as 'month' | 'quarter' | 'year'}
             onPickDay={pickCalendarDay}
           />
-        ) : loading || !timesheet ? (
-          <div className="panel loading-panel">Загружаем списания…</div>
-        ) : (
+        ) : loading && !timesheet ? (
+          <div className="panel loading-panel">Загружаем табель…</div>
+        ) : timesheet ? (
           <WeekGrid
             timesheet={timesheet}
             periodStart={periodStart}
             periodEnd={periodEnd}
             onAddTime={openEntry}
           />
+        ) : (
+          <div className="panel loading-panel">Нет данных табеля</div>
         )}
       </main>
 

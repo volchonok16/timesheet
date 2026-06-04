@@ -170,6 +170,7 @@ class TimesheetSyncOut(ApiModel):
     tasks_scanned: int
     period_start: date
     period_end: date
+    cached: bool = False
 
 
 class RecentEntryOut(ApiModel):

@@ -76,6 +76,18 @@ def startup() -> None:
                 "ON time_entries (account_key, tfs_sync_key) WHERE tfs_sync_key IS NOT NULL"
             )
         )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS account_sync_states ("
+                "id SERIAL PRIMARY KEY, "
+                "account_key VARCHAR(255) NOT NULL, "
+                "period_start DATE NOT NULL, "
+                "view VARCHAR(16) NOT NULL, "
+                "synced_at TIMESTAMP NOT NULL, "
+                "CONSTRAINT uq_account_sync_period UNIQUE (account_key, period_start, view)"
+                ")"
+            )
+        )
 
 
 def require_tfs_auth(x_session_id: str | None = Header(default=None, alias="X-Session-Id")) -> TfsAuth:
@@ -194,6 +206,7 @@ async def cost_project_options(
 async def sync_timesheet_from_tfs(
     start: date | None = Query(default=None),
     view: str = Query(default="week", pattern="^(week|month)$"),
+    force: bool = Query(default=False, description="Игнорировать кэш TTL и полный WIQL"),
     auth: TfsAuth = Depends(require_tfs_auth),
     db: Session = Depends(get_db),
 ) -> TimesheetSyncOut:
@@ -206,7 +219,9 @@ async def sync_timesheet_from_tfs(
         start = week_start(start)
 
     try:
-        payload = await sync_time_from_tfs(db, auth, period_start=start, view=view)
+        payload = await sync_time_from_tfs(
+            db, auth, period_start=start, view=view, force=force
+        )
         return TimesheetSyncOut(**payload)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
@@ -216,7 +231,10 @@ async def sync_timesheet_from_tfs(
 async def get_timesheet(
     start: date | None = Query(default=None),
     view: str = Query(default="week", pattern="^(week|month)$"),
-    sync: bool = Query(default=True, description="Подтянуть списания из TFS перед построением табеля"),
+    sync: bool = Query(
+        default=False,
+        description="Подтянуть из TFS (с TTL-кэшем; для быстрой загрузки оставьте false)",
+    ),
     auth: TfsAuth = Depends(require_tfs_auth),
     db: Session = Depends(get_db),
 ) -> TimesheetOut:
@@ -230,7 +248,9 @@ async def get_timesheet(
 
     if sync:
         try:
-            await sync_time_from_tfs(db, auth, period_start=start, view=view)
+            await sync_time_from_tfs(
+                db, auth, period_start=start, view=view, force=False
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
 

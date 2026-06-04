@@ -43,8 +43,8 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 
 - `POST /api/auth/login` — вход
 - `GET /api/work-items/search?q=` — поиск
-- `GET /api/timesheet?start=&view=week|month&sync=true` — табель (с опциональной синхронизацией из TFS)
-- `POST /api/timesheet/sync?start=&view=week|month` — только синхронизация из TFS
+- `GET /api/timesheet?start=&view=week|month` — табель из БД (быстро; `sync=true` — с TFS, есть TTL-кэш 10 мин)
+- `POST /api/timesheet/sync?start=&view=week|month&force=true` — подтяжка из TFS (кнопка «Из TFS»)
 - `GET /api/calendar?year=&month=` — календарь
 - `POST /api/time-entries` — списание времени
 

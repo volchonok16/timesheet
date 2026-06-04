@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -9,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import TimeEntry
+from app.db import AccountSyncState, TimeEntry
 from app.tfs_auth import TfsAuth
 from app.tfs_client import TfsClient
 from app.time_service import (
@@ -33,6 +34,12 @@ class ParsedTimeSlice:
     hours: float
     comment: str | None
     sync_key: str
+
+
+@dataclass(frozen=True)
+class TrackingTarget:
+    task_id: int
+    parent_id: int
 
 
 def _parse_hours_token(token: str) -> float:
@@ -129,88 +136,183 @@ def is_tracking_child_item(child: dict[str, Any]) -> bool:
     return role in ROLE_LABELS
 
 
-def week_delta_from_slices(
-    slices: list[ParsedTimeSlice],
+def filter_updates_for_sync(
+    updates: list[dict[str, Any]],
     *,
     period_start: date,
-) -> list[float]:
-    """Как в Oscar: 7 чисел — часы по дням недели с period_start (понедельник)."""
-    end = period_start + timedelta(days=6)
-    daily: dict[date, float] = {}
-    for slice_ in slices:
-        if period_start <= slice_.entry_date <= end:
-            daily[slice_.entry_date] = round(daily.get(slice_.entry_date, 0) + slice_.hours, 2)
-    return [round(daily.get(period_start + timedelta(days=i), 0), 2) for i in range(7)]
+) -> list[dict[str, Any]]:
+    """Не разбираем всю историю с начала времён — только релевантные ревизии."""
+    cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
+    filtered: list[dict[str, Any]] = []
+    for update in updates:
+        revised = _parse_revised_date(update.get("revisedDate"))
+        if revised < cutoff:
+            continue
+        fields = as_update_fields(update)
+        if "Microsoft.VSTS.Scheduling.CompletedWork" in fields or "System.History" in fields:
+            filtered.append(update)
+    return filtered
 
 
 def aggregate_slices_for_task(
     updates: list[dict[str, Any]],
     *,
     tracking_work_item_id: int,
+    period_start: date,
 ) -> list[ParsedTimeSlice]:
     merged: list[ParsedTimeSlice] = []
-    for update in updates:
+    for update in filter_updates_for_sync(updates, period_start=period_start):
         merged.extend(
             parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
         )
     return merged
 
 
-async def collect_tracking_task_ids(
+def should_run_sync(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    view: str,
+    force: bool,
+) -> bool:
+    if force:
+        return True
+    row = db.scalar(
+        select(AccountSyncState).where(
+            AccountSyncState.account_key == auth.account_key,
+            AccountSyncState.period_start == period_start,
+            AccountSyncState.view == view,
+        )
+    )
+    if row is None:
+        return True
+    age = (datetime.utcnow() - row.synced_at).total_seconds()
+    return age >= settings.tfs_sync_ttl_seconds
+
+
+def mark_synced(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    view: str,
+) -> None:
+    row = db.scalar(
+        select(AccountSyncState).where(
+            AccountSyncState.account_key == auth.account_key,
+            AccountSyncState.period_start == period_start,
+            AccountSyncState.view == view,
+        )
+    )
+    now = datetime.utcnow()
+    if row is None:
+        db.add(
+            AccountSyncState(
+                account_key=auth.account_key,
+                period_start=period_start,
+                view=view,
+                synced_at=now,
+            )
+        )
+    else:
+        row.synced_at = now
+
+
+def load_existing_sync_keys(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    period_end: date,
+) -> set[str]:
+    rows = db.scalars(
+        select(TimeEntry.tfs_sync_key).where(
+            TimeEntry.account_key == auth.account_key,
+            TimeEntry.tfs_sync_key.isnot(None),
+            TimeEntry.entry_date >= period_start,
+            TimeEntry.entry_date <= period_end,
+        )
+    ).all()
+    return {str(key) for key in rows if key}
+
+
+async def collect_tracking_targets(
     client: TfsClient,
     db: Session,
     auth: TfsAuth,
     *,
     period_start: date,
     view: str,
-) -> list[int]:
-    """
-    Как Oscar stream_get-time-tracking-results: недавние родители → дочерние «Роль - Активность».
-    Плюс WIQL по задачам с Completed Work (с запасом по дате изменения).
-    """
+    include_wiql: bool,
+) -> list[TrackingTarget]:
     seen: set[int] = set()
-    ordered: list[int] = []
+    targets: list[TrackingTarget] = []
 
-    def add(task_id: int) -> None:
+    def add(task_id: int, parent_id: int) -> None:
         if task_id not in seen:
             seen.add(task_id)
-            ordered.append(task_id)
+            targets.append(TrackingTarget(task_id=task_id, parent_id=parent_id))
 
     parent_ids: list[int] = []
-    for row in list_recent(db, auth, limit=40):
+    for row in list_recent(db, auth, limit=settings.tfs_sync_max_parents):
         parent_ids.append(row.id)
     parent_ids.extend(
-        timesheet_parent_ids(db, auth, period_start=period_start, view=view, recent_limit=40)
-    )
-    parent_seen: set[int] = set()
-    for parent_id in parent_ids:
-        if parent_id in parent_seen:
-            continue
-        parent_seen.add(parent_id)
-        for child in await client.get_child_tasks(parent_id):
-            if not is_tracking_child_item(child):
-                continue
-            add(int(child["id"]))
-
-    lookback = period_start - timedelta(days=90)
-    wiql_ids = await client.find_task_ids_with_completed_work(
-        changed_since=lookback,
-        limit=settings.tfs_sync_max_tasks,
-    )
-    for task_id in wiql_ids:
-        add(task_id)
-
-    return ordered[: settings.tfs_sync_max_tasks]
-
-
-def sync_key_exists(db: Session, auth: TfsAuth, sync_key: str) -> bool:
-    existing = db.scalar(
-        select(TimeEntry.id).where(
-            TimeEntry.account_key == auth.account_key,
-            TimeEntry.tfs_sync_key == sync_key,
+        timesheet_parent_ids(
+            db,
+            auth,
+            period_start=period_start,
+            view=view,
+            recent_limit=settings.tfs_sync_max_parents,
         )
     )
-    return existing is not None
+    parent_seen: set[int] = set()
+    unique_parents: list[int] = []
+    for parent_id in parent_ids:
+        if parent_id not in parent_seen:
+            parent_seen.add(parent_id)
+            unique_parents.append(parent_id)
+    unique_parents = unique_parents[: settings.tfs_sync_max_parents]
+
+    if unique_parents:
+        child_lists = await asyncio.gather(
+            *[client.get_child_tasks(pid) for pid in unique_parents],
+            return_exceptions=True,
+        )
+        for parent_id, children in zip(unique_parents, child_lists):
+            if isinstance(children, BaseException):
+                continue
+            for child in children:
+                if not is_tracking_child_item(child):
+                    continue
+                add(int(child["id"]), parent_id)
+
+    if include_wiql:
+        lookback = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
+        wiql_ids = await client.find_task_ids_with_completed_work(
+            changed_since=lookback,
+            limit=settings.tfs_sync_max_tasks,
+        )
+        for task_id in wiql_ids:
+            if task_id in seen:
+                continue
+            parent_id = await client.get_parent_work_item_id(task_id)
+            if parent_id is not None:
+                add(task_id, parent_id)
+
+    return targets[: settings.tfs_sync_max_tasks]
+
+
+def _assigned_to_user(fields: dict[str, Any], user_hint: str, username: str | None) -> bool:
+    if not user_hint:
+        return True
+    assigned = str(fields.get("System.AssignedTo") or "").casefold()
+    if not assigned:
+        return True
+    if user_hint in assigned:
+        return True
+    uname = (username or "").casefold()
+    return bool(uname and uname in assigned)
 
 
 async def sync_time_from_tfs(
@@ -219,19 +321,39 @@ async def sync_time_from_tfs(
     *,
     period_start: date,
     view: str,
-) -> dict[str, int]:
+    force: bool = False,
+) -> dict[str, Any]:
     end = period_end(period_start, view)
+    if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
+        return {
+            "imported": 0,
+            "skipped": 0,
+            "tasks_scanned": 0,
+            "period_start": period_start,
+            "period_end": end,
+            "cached": True,
+        }
+
     client = TfsClient(auth)
     imported = 0
     skipped = 0
     tasks_scanned = 0
+    parents_touched: set[int] = set()
+    existing_keys = load_existing_sync_keys(
+        db, auth, period_start=period_start, period_end=end
+    )
 
     try:
-        task_ids = await collect_tracking_task_ids(
-            client, db, auth, period_start=period_start, view=view
+        targets = await collect_tracking_targets(
+            client,
+            db,
+            auth,
+            period_start=period_start,
+            view=view,
+            include_wiql=force,
         )
         local_tracking_ids = db.scalars(
-            select(TimeEntry.tracking_work_item_id)
+            select(TimeEntry.tracking_work_item_id, TimeEntry.parent_work_item_id)
             .where(
                 TimeEntry.account_key == auth.account_key,
                 TimeEntry.tracking_work_item_id.isnot(None),
@@ -240,69 +362,133 @@ async def sync_time_from_tfs(
             )
             .distinct()
         ).all()
-        for raw_id in local_tracking_ids:
-            if raw_id is not None and int(raw_id) not in task_ids:
-                task_ids.append(int(raw_id))
+        seen_tasks = {t.task_id for t in targets}
+        for tracking_id, parent_id in local_tracking_ids:
+            if tracking_id is None or parent_id is None:
+                continue
+            tid, pid = int(tracking_id), int(parent_id)
+            if tid not in seen_tasks:
+                targets.append(TrackingTarget(task_id=tid, parent_id=pid))
+                seen_tasks.add(tid)
+
+        targets = targets[: settings.tfs_sync_max_tasks]
+        if not targets:
+            mark_synced(db, auth, period_start=period_start, view=view)
+            db.commit()
+            return {
+                "imported": 0,
+                "skipped": 0,
+                "tasks_scanned": 0,
+                "period_start": period_start,
+                "period_end": end,
+                "cached": False,
+            }
 
         user_hint = (await client.get_authenticated_user_name() or auth.username or "").casefold()
+        task_ids = [target.task_id for target in targets]
+        parent_ids = list({target.parent_id for target in targets})
 
-        for task_id in task_ids:
-            tasks_scanned += 1
-            parent_id = await client.get_parent_work_item_id(task_id)
-            if parent_id is None:
-                skipped += 1
-                continue
+        def _raw_item_id(item: dict[str, Any]) -> int:
+            raw_id = item.get("id")
+            if raw_id is not None:
+                return int(raw_id)
+            fields = item.get("fields") or {}
+            return int(fields["System.Id"])
 
-            task_item = await client.get_work_item(task_id)
-            fields = task_item.get("fields") or {}
-            if user_hint:
-                assigned = str(fields.get("System.AssignedTo") or "").casefold()
-                if assigned and user_hint not in assigned:
-                    uname = (auth.username or "").casefold()
-                    if not uname or uname not in assigned:
-                        skipped += 1
+        raw_tasks = await client.get_work_items_batch(
+            task_ids,
+            fields=[
+                "System.Id",
+                "System.Title",
+                "System.AssignedTo",
+                settings.cost_project_field,
+            ],
+        )
+        raw_parents = await client.get_work_items_batch(parent_ids)
+        tasks_by_id = {_raw_item_id(item): item for item in raw_tasks}
+        parents_by_id = {_raw_item_id(item): item for item in raw_parents}
+
+        sem = asyncio.Semaphore(max(1, settings.tfs_sync_parallel))
+
+        async def process_target(target: TrackingTarget) -> tuple[int, int]:
+            async with sem:
+                task_id = target.task_id
+                parent_id = target.parent_id
+                task_item = tasks_by_id.get(task_id)
+                if task_item is None:
+                    return 0, 1
+
+                fields = task_item.get("fields") or {}
+                if not _assigned_to_user(fields, user_hint, auth.username):
+                    return 0, 1
+
+                title = str(fields.get("System.Title") or f"#{task_id}")
+                role, activity = parse_tracking_title(title)
+                if not role:
+                    role = "—"
+                if not activity:
+                    activity = title
+
+                updates = await client.get_work_item_updates(task_id)
+                parent_item = parents_by_id.get(parent_id)
+                cost_project = client.read_cost_project_value(task_item)
+                if not cost_project and parent_item:
+                    cost_project = client.read_cost_project_value(parent_item)
+
+                local_imported = 0
+                local_skipped = 0
+                for slice_ in aggregate_slices_for_task(
+                    updates,
+                    tracking_work_item_id=task_id,
+                    period_start=period_start,
+                ):
+                    if not entry_in_period(
+                        slice_.entry_date, period_start=period_start, period_end=end
+                    ):
+                        continue
+                    if slice_.sync_key in existing_keys:
+                        local_skipped += 1
                         continue
 
-            title = str(fields.get("System.Title") or f"#{task_id}")
-            role, activity = parse_tracking_title(title)
-            if not role:
-                role = "—"
-            if not activity:
-                activity = title
-
-            updates = await client.get_work_item_updates(task_id)
-            parent_item = await client.get_work_item(parent_id)
-            parent_norm = client.normalize_item(parent_item)
-
-            # Все ревизии (как Oscar): даты берём из истории «YYYY-MM-DD: +Nч», не из revisedDate.
-            for slice_ in aggregate_slices_for_task(
-                updates, tracking_work_item_id=task_id
-            ):
-                if not entry_in_period(slice_.entry_date, period_start=period_start, period_end=end):
-                    continue
-                if sync_key_exists(db, auth, slice_.sync_key):
-                    skipped += 1
-                    continue
-
-                db.add(
-                    TimeEntry(
-                        account_key=auth.account_key,
-                        parent_work_item_id=parent_id,
-                        tracking_work_item_id=task_id,
-                        role=role,
-                        activity=activity,
-                        entry_date=slice_.entry_date,
-                        hours=slice_.hours,
-                        comment=slice_.comment,
-                        cost_project=client.read_cost_project_value(task_item)
-                        or client.read_cost_project_value(parent_item),
-                        tfs_sync_key=slice_.sync_key,
+                    db.add(
+                        TimeEntry(
+                            account_key=auth.account_key,
+                            parent_work_item_id=parent_id,
+                            tracking_work_item_id=task_id,
+                            role=role,
+                            activity=activity,
+                            entry_date=slice_.entry_date,
+                            hours=slice_.hours,
+                            comment=slice_.comment,
+                            cost_project=cost_project,
+                            tfs_sync_key=slice_.sync_key,
+                        )
                     )
-                )
-                imported += 1
+                    existing_keys.add(slice_.sync_key)
+                    local_imported += 1
 
-            touch_recent(db, auth, parent_norm)
+                parents_touched.add(parent_id)
+                return local_imported, local_skipped
 
+        results = await asyncio.gather(
+            *[process_target(target) for target in targets],
+            return_exceptions=True,
+        )
+        for result in results:
+            tasks_scanned += 1
+            if isinstance(result, BaseException):
+                skipped += 1
+                continue
+            imp, sk = result
+            imported += imp
+            skipped += sk
+
+        for parent_id in parents_touched:
+            parent_item = parents_by_id.get(parent_id)
+            if parent_item:
+                touch_recent(db, auth, client.normalize_item(parent_item))
+
+        mark_synced(db, auth, period_start=period_start, view=view)
         db.commit()
     finally:
         await client.close()
@@ -313,4 +499,5 @@ async def sync_time_from_tfs(
         "tasks_scanned": tasks_scanned,
         "period_start": period_start,
         "period_end": end,
+        "cached": False,
     }

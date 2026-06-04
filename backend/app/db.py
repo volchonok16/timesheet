@@ -30,6 +30,19 @@ class TimeEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AccountSyncState(Base):
+    """Когда последний раз подтягивали TFS для account + периода (не дёргать TFS на каждый refresh)."""
+
+    __tablename__ = "account_sync_states"
+    __table_args__ = (UniqueConstraint("account_key", "period_start", "view", name="uq_account_sync_period"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_key: Mapped[str] = mapped_column(String(255), index=True)
+    period_start: Mapped[date] = mapped_column(Date)
+    view: Mapped[str] = mapped_column(String(16))
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class RecentWorkItem(Base):
     __tablename__ = "recent_work_items"
     __table_args__ = (UniqueConstraint("account_key", "work_item_id", name="uq_recent_account_item"),)
