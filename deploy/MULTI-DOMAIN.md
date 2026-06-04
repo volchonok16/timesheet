@@ -199,6 +199,44 @@ cd /var/www/pallink && git pull && …
 
 ---
 
+## mateplace.ru редиректит на pallink.fun
+
+Обычно две причины сразу:
+
+1. У **pallink** в nginx стоит `default_server` на 443 — запросы на `https://mateplace.ru` попадают на vhost pallink (Roadmap может увести на свой домен).
+2. Нет SSL-сертификата для **mateplace.ru** — блоки `mateplace.conf` на 443 не работают, снова срабатывает pallink.
+
+**Авто-правка:**
+
+```bash
+cd /var/www/timesheet
+git pull
+sudo bash deploy/fix-coexist.sh
+```
+
+**Вручную:**
+
+```bash
+sudo grep -r default_server /etc/nginx/sites-enabled/
+# уберите default_server везде
+
+sudo sed -i 's/32573/5173/g; s/32080/8000/g' /etc/nginx/sites-available/pallink.conf
+
+cd /var/www/timesheet && sudo bash deploy/deploy.sh
+sudo bash deploy/deploy.sh --issue-ssl   # если нет cert для mateplace
+
+cd /var/www/pallink && docker compose up -d
+```
+
+Проверка, что mateplace не проксируется на pallink:
+
+```bash
+grep proxy_pass /etc/nginx/sites-enabled/mateplace.conf
+# должно быть 31080 и 31573, НЕ 5173
+```
+
+---
+
 ## 502 Bad Gateway на обоих доменах
 
 Nginx работает, но **контейнеры не слушают** те порты, что указаны в `proxy_pass`.
