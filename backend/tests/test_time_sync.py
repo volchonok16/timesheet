@@ -2,6 +2,7 @@ from datetime import date
 
 from app.tfs_auth import TfsAuth, TfsIdentity, attach_tfs_identity
 from app.time_sync import (
+    _history_increment_text,
     aggregate_slices_for_task,
     filter_updates_for_sync,
     parse_update_time_slices,
@@ -102,6 +103,32 @@ def test_update_revised_by_match_unique_name_from_pat() -> None:
     assert not update_revised_by_current_user(
         update, current_user_tokens={"main\\sidorov"}
     )
+
+
+def test_history_increment_skips_previous_lines() -> None:
+    fields = {
+        "System.History": {
+            "oldValue": "2026-06-01: +1ч — старое\n2026-06-02: +2ч — старое",
+            "newValue": (
+                "2026-06-01: +1ч — старое\n"
+                "2026-06-02: +2ч — старое\n"
+                "2026-06-03: +3ч — новое"
+            ),
+        },
+    }
+    assert _history_increment_text(fields) == "2026-06-03: +3ч — новое"
+
+
+def test_tokens_do_not_match_by_substring() -> None:
+    tokens = _pat_user_tokens()
+    update = _update_with_author(
+        rev=1,
+        revised_date="2026-06-04T00:00:00Z",
+        author_display="Петровский Иван",
+        author_unique="MAIN\\petrovski",
+        fields={},
+    )
+    assert not update_revised_by_current_user(update, current_user_tokens=tokens)
 
 
 def test_filter_updates_skips_old_revisions() -> None:

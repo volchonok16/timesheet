@@ -32,8 +32,6 @@ class TfsIdentity:
                 tokens.add(value.split("\\")[-1])
             if "@" in value:
                 tokens.add(value.split("@")[0])
-            if self.display_name and " " in self.display_name:
-                tokens.add(self.display_name.split()[0].casefold())
         return tokens
 
 

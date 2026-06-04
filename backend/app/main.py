@@ -218,6 +218,7 @@ async def sync_timesheet_from_tfs(
     force: bool = Query(default=False, description="Игнорировать кэш TTL и полный WIQL"),
     auth: TfsAuth = Depends(require_tfs_auth),
     db: Session = Depends(get_db),
+    x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
 ) -> TimesheetSyncOut:
     today = date.today()
     if start is None:
@@ -229,11 +230,38 @@ async def sync_timesheet_from_tfs(
 
     try:
         payload = await sync_time_from_tfs(
-            db, auth, period_start=start, view=view, force=force
+            db,
+            auth,
+            period_start=start,
+            view=view,
+            force=force,
+            session_id=x_session_id,
         )
         return TimesheetSyncOut(**payload)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
+
+
+@app.post("/api/timesheet/repair", response_model=TimesheetSyncOut)
+async def repair_timesheet_data(
+    auth: TfsAuth = Depends(require_tfs_auth),
+    db: Session = Depends(get_db),
+    x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
+) -> TimesheetSyncOut:
+    """Сбросить все импорты из TFS и пересобрать текущую неделю только для владельца PAT."""
+    start = week_start(date.today())
+    try:
+        payload = await sync_time_from_tfs(
+            db,
+            auth,
+            period_start=start,
+            view="week",
+            force=True,
+            session_id=x_session_id,
+        )
+        return TimesheetSyncOut(**payload)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TFS repair: {exc}") from exc
 
 
 @app.get("/api/timesheet", response_model=TimesheetOut)

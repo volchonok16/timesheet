@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import AccountSyncState, TimeEntry
+from app.auth_sessions import update_session
 from app.tfs_auth import TfsAuth, attach_tfs_identity
 from app.tfs_client import TfsClient
 from app.time_service import (
@@ -69,6 +70,26 @@ def _completed_work_delta(fields: dict[str, Any]) -> float | None:
     return delta
 
 
+def _history_increment_text(fields: dict[str, Any]) -> str:
+    """Только текст, добавленный в этой ревизии (не весь тред комментариев)."""
+    history_raw = fields.get("System.History")
+    if isinstance(history_raw, str):
+        return history_raw.strip()
+    if not isinstance(history_raw, dict):
+        return ""
+    new_val = str(history_raw.get("newValue") or "").strip()
+    if not new_val:
+        return ""
+    old_val = str(history_raw.get("oldValue") or "").strip()
+    if not old_val:
+        return new_val
+    if new_val.startswith(old_val):
+        return new_val[len(old_val) :].lstrip("\n\r")
+    old_lines = {line.strip() for line in old_val.splitlines() if line.strip()}
+    added = [line for line in new_val.splitlines() if line.strip() and line.strip() not in old_lines]
+    return "\n".join(added) if added else new_val
+
+
 def parse_update_time_slices(
     update: dict[str, Any],
     *,
@@ -78,12 +99,7 @@ def parse_update_time_slices(
     rev = int(update.get("rev") or update.get("id") or 0)
     revised_date = _parse_revised_date(update.get("revisedDate"))
 
-    history_raw = fields.get("System.History")
-    history_text = ""
-    if isinstance(history_raw, dict):
-        history_text = str(history_raw.get("newValue") or "")
-    elif isinstance(history_raw, str):
-        history_text = history_raw
+    history_text = _history_increment_text(fields)
 
     slices: list[ParsedTimeSlice] = []
     for index, match in enumerate(HISTORY_LINE.finditer(history_text)):
@@ -151,13 +167,10 @@ def _identity_tokens_from_blob(blob: Any) -> set[str]:
 
 
 def _tokens_match(author_tokens: set[str], current_user_tokens: set[str]) -> bool:
-    for author in author_tokens:
-        for current in current_user_tokens:
-            if not author or not current:
-                continue
-            if author == current or author in current or current in author:
-                return True
-    return False
+    """Точное совпадение идентификаторов (без подстрок вроде petrov ⊂ petrovski)."""
+    if not author_tokens or not current_user_tokens:
+        return False
+    return bool(author_tokens & current_user_tokens)
 
 
 def update_revised_by_current_user(
@@ -227,6 +240,20 @@ def aggregate_slices_for_task(
     return merged
 
 
+def purge_all_imported_tfs_entries(db: Session, auth: TfsAuth) -> int:
+    """Удаляет все импортированные из TFS строки аккаунта (чужие/дубли при смене логики)."""
+    rows = db.scalars(
+        select(TimeEntry.id).where(
+            TimeEntry.account_key == auth.account_key,
+            TimeEntry.tfs_sync_key.isnot(None),
+        )
+    ).all()
+    if not rows:
+        return 0
+    db.execute(delete(TimeEntry).where(TimeEntry.id.in_(rows)))
+    return len(rows)
+
+
 def purge_imported_tfs_entries(
     db: Session,
     auth: TfsAuth,
@@ -234,7 +261,7 @@ def purge_imported_tfs_entries(
     period_start: date,
     period_end: date,
 ) -> int:
-    """Удаляет ранее импортированные из TFS строки (в т.ч. чужие) перед пересборкой."""
+    """Удаляет импортированные из TFS строки в периоде перед пересборкой."""
     rows = db.scalars(
         select(TimeEntry.id).where(
             TimeEntry.account_key == auth.account_key,
@@ -393,6 +420,7 @@ async def sync_time_from_tfs(
     period_start: date,
     view: str,
     force: bool = False,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     end = period_end(period_start, view)
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
@@ -413,14 +441,21 @@ async def sync_time_from_tfs(
 
     try:
         user_tokens = await resolve_current_user_tokens(client, auth)
-        if user_tokens and not auth.tfs_unique_name:
+        if not auth.tfs_unique_name:
             identity = await client.get_authenticated_user_identity()
             if identity:
                 auth = attach_tfs_identity(auth, identity)
                 user_tokens = auth.identity_match_tokens()
-        purged = purge_imported_tfs_entries(
-            db, auth, period_start=period_start, period_end=end
-        )
+        if not user_tokens:
+            raise ValueError(
+                "Не удалось определить пользователя TFS по PAT. Выйдите и войдите снова."
+            )
+        if force:
+            purged = purge_all_imported_tfs_entries(db, auth)
+        else:
+            purged = purge_imported_tfs_entries(
+                db, auth, period_start=period_start, period_end=end
+            )
         existing_keys = load_existing_sync_keys(
             db, auth, period_start=period_start, period_end=end
         )
@@ -568,6 +603,8 @@ async def sync_time_from_tfs(
 
         mark_synced(db, auth, period_start=period_start, view=view)
         db.commit()
+        if session_id and auth.tfs_unique_name:
+            update_session(session_id, auth)
     finally:
         await client.close()
 

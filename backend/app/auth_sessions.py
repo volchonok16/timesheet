@@ -47,6 +47,20 @@ def get_session(session_id: str | None) -> TfsAuth | None:
         db.close()
 
 
+def update_session(session_id: str | None, auth: TfsAuth) -> None:
+    if not session_id:
+        return
+    db = SessionLocal()
+    try:
+        row = db.get(AuthSessionRow, session_id)
+        if row is None:
+            return
+        row.payload = _serialize(auth)
+        db.commit()
+    finally:
+        db.close()
+
+
 def delete_session(session_id: str | None) -> None:
     if not session_id:
         return

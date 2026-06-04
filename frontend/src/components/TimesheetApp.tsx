@@ -22,6 +22,7 @@ import TimeEntryModal from './TimeEntryModal'
 import WeekGrid from './WeekGrid'
 
 const BACKGROUND_SYNC_TTL_MS = 10 * 60 * 1000
+const DATA_REPAIR_KEY = 'timesheet-data-repair-v2'
 
 type Props = {
   onLogout: () => void
@@ -164,6 +165,28 @@ export default function TimesheetApp({ onLogout }: Props) {
   useEffect(() => {
     void loadMeta()
     void loadStats()
+  }, [])
+
+  useEffect(() => {
+    if (sessionStorage.getItem(DATA_REPAIR_KEY)) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/timesheet/repair', { method: 'POST' })
+        if (!response.ok || cancelled) {
+          return
+        }
+        sessionStorage.setItem(DATA_REPAIR_KEY, '1')
+        setRefreshKey((value) => value + 1)
+      } catch {
+        /* одноразовый repair не должен ломать UI */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
