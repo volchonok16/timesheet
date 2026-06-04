@@ -32,7 +32,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TRACKING_STREAM_BASE_URL", "OSCAR_API_BASE_URL"),
     )
     tracking_stream_enabled: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("TRACKING_STREAM_ENABLED", "OSCAR_SYNC_ENABLED"),
     )
 

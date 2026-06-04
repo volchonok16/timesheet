@@ -97,15 +97,6 @@ nginx -t
 systemctl reload nginx
 
 echo ""
-if [[ -f .env ]]; then
-  if ! grep -qE '^TRACKING_STREAM_ENABLED=true' .env 2>/dev/null; then
-    warn "В .env нет TRACKING_STREAM_ENABLED=true — часы как в Oscar /track не подтянутся (будут нули)."
-  fi
-  if ! grep -qE '^TRACKING_STREAM_BASE_URL=' .env 2>/dev/null; then
-    warn "В .env нет TRACKING_STREAM_BASE_URL=https://oscar.k8s-mn.ds.t2.ru"
-  fi
-fi
-
 echo "==> 5. mateplace не должен редиректить на pallink"
 if grep -q 'listen 443' /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null \
   && grep -q "server_name ${DOMAIN}" /etc/nginx/sites-enabled/mateplace.conf 2>/dev/null; then

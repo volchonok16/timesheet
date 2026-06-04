@@ -651,8 +651,11 @@ async def sync_time_from_tfs(
     force: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    """
+    Сетка недели из TFS (как /track в Oscar по смыслу): дочерние «Роль — активность»,
+    часы по дням пн–вс из History/Completed Work. Запросов в Oscar нет.
+    """
     from app.auth_service import ensure_auth_identity
-    from app.tracking_stream_sync import try_sync_from_track_stream
 
     end = period_end(period_start, view)
 
@@ -663,32 +666,6 @@ async def sync_time_from_tfs(
             update_session(session_id, auth)
     finally:
         await identity_client.close()
-
-    stream_payload = await try_sync_from_track_stream(
-        db, auth, period_start=period_start, view=view, force=force
-    )
-    if settings.tracking_stream_enabled and settings.tracking_stream_base_url:
-        if session_id and auth.identity_match_tokens():
-            update_session(session_id, auth)
-        if stream_payload is None:
-            return {
-                "imported": 0,
-                "skipped": 0,
-                "tasks_scanned": 0,
-                "purged": 0,
-                "period_start": period_start,
-                "period_end": end,
-                "cached": False,
-                "source": "stream",
-                "stream_ok": False,
-                "message": "Укажите логин TFS при входе (нужен для Oscar /track).",
-            }
-        return stream_payload
-
-    if stream_payload is not None and int(stream_payload.get("imported") or 0) > 0:
-        if session_id and auth.identity_match_tokens():
-            update_session(session_id, auth)
-        return stream_payload
 
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
         return {
@@ -719,13 +696,12 @@ async def sync_time_from_tfs(
             )
         owner_key = owner_unique_name_for(auth)
         backfill_entry_owners(db, auth)
+        # Только выбранная неделя (как delta[7]), без полной истории аккаунта.
+        purged = purge_imported_tfs_entries(
+            db, auth, period_start=period_start, period_end=end
+        )
         if force:
-            purged = purge_all_imported_tfs_entries(db, auth)
             purged += purge_entries_not_owned_by_user(db, auth)
-        else:
-            purged = purge_imported_tfs_entries(
-                db, auth, period_start=period_start, period_end=end
-            )
         existing_keys = load_existing_sync_keys(
             db, auth, period_start=period_start, period_end=end
         )
@@ -769,9 +745,10 @@ async def sync_time_from_tfs(
                 "purged": purged,
                 "period_start": period_start,
                 "period_end": end,
-        "cached": False,
-        "source": "tfs-grid",
-    }
+                "cached": False,
+                "source": "tfs-grid",
+                "message": "TFS: не найдено ваших задач списания за неделю.",
+            }
 
         task_ids = [target.task_id for target in targets]
         parent_ids = list({target.parent_id for target in targets})
@@ -907,10 +884,9 @@ async def sync_time_from_tfs(
             None
             if imported > 0
             else (
-                "TFS: задачи найдены, но часов в History/Completed Work за период нет. "
-                "Включите TRACKING_STREAM_ENABLED в .env на сервере (как в Oscar /track)."
+                "TFS: задачи найдены, но часов в History/Completed Work за эту неделю нет."
                 if tasks_scanned > 0
-                else "TFS: не найдено ваших задач за период (проверьте PAT и логин TFS)."
+                else "TFS: не найдено ваших задач списания за неделю (проверьте PAT и логин)."
             )
         ),
     }
