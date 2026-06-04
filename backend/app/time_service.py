@@ -218,6 +218,33 @@ def _tracking_row_key(entry: TimeEntry) -> tuple[str, str, int | None]:
     return (entry.role, entry.activity, None)
 
 
+def closed_parent_ids(db: Session, auth: TfsAuth) -> set[int]:
+    rows = db.scalars(
+        select(RecentWorkItem.work_item_id).where(
+            RecentWorkItem.account_key == auth.account_key,
+            RecentWorkItem.state.in_(CLOSED_STATES),
+        )
+    ).all()
+    return {int(row) for row in rows}
+
+
+def sum_groups_hours(
+    groups: list[TimesheetGroupOut],
+) -> tuple[list[DayTotalOut], float]:
+    day_totals_map: dict[date, float] = defaultdict(float)
+    total = 0.0
+    for group in groups:
+        total += group.total_hours
+        for row in group.tracking_rows:
+            for day_key, hours in row.daily_hours.items():
+                day_totals_map[date.fromisoformat(day_key)] += hours
+    day_totals = [
+        DayTotalOut(date=day, hours=round(hours, 2))
+        for day, hours in sorted(day_totals_map.items())
+    ]
+    return day_totals, round(total, 2)
+
+
 def _pick_display_role_activity(entries: list[TimeEntry]) -> tuple[str, str]:
     for entry in entries:
         if entry.role and entry.role != "—":
@@ -655,7 +682,6 @@ def build_timesheet(
 
     groups: list[TimesheetGroupOut] = []
     closed_groups: list[TimesheetGroupOut] = []
-    total = 0.0
 
     parent_map = {int(item["id"]): item for item in parent_items}
     seen_parents = set(by_parent.keys())
@@ -725,7 +751,6 @@ def build_timesheet(
         group_total = round(sum(row.total_hours for row in tracking_rows), 2)
         if group_total <= 0:
             continue
-        total += group_total
         group = TimesheetGroupOut(
             parent=parent_out,
             children=[],
@@ -737,23 +762,17 @@ def build_timesheet(
         else:
             groups.append(group)
 
-    day_totals_map: dict[date, float] = defaultdict(float)
-    for group in groups + closed_groups:
-        for row in group.tracking_rows:
-            for day_key, hours in row.daily_hours.items():
-                day_totals_map[date.fromisoformat(day_key)] += hours
-
-    day_totals = [
-        DayTotalOut(date=day, hours=round(hours, 2))
-        for day, hours in sorted(day_totals_map.items())
-    ]
+    day_totals, total_hours = sum_groups_hours(groups)
+    closed_day_totals, closed_total_hours = sum_groups_hours(closed_groups)
 
     return TimesheetOut(
         period_start=period_start,
         period_end=end,
         view="month" if view == "month" else "week",
         day_totals=day_totals,
-        total_hours=round(total, 2),
+        total_hours=total_hours,
+        closed_day_totals=closed_day_totals,
+        closed_total_hours=closed_total_hours,
         groups=groups,
         closed_groups=closed_groups,
     )
@@ -847,18 +866,25 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
     start = week_start(today)
     end = start + timedelta(days=6)
 
-    week_entries = filter_entries_for_user(
-        list(
-            db.scalars(
-                select(TimeEntry).where(
-                    TimeEntry.account_key == auth.account_key,
-                    TimeEntry.entry_date >= start,
-                    TimeEntry.entry_date <= end,
-                )
-            ).all()
-        ),
-        auth,
-    )
+    closed_ids = closed_parent_ids(db, auth)
+    week_entries = [
+        entry
+        for entry in dedupe_time_entries(
+            filter_entries_for_user(
+                list(
+                    db.scalars(
+                        select(TimeEntry).where(
+                            TimeEntry.account_key == auth.account_key,
+                            TimeEntry.entry_date >= start,
+                            TimeEntry.entry_date <= end,
+                        )
+                    ).all()
+                ),
+                auth,
+            )
+        )
+        if entry.parent_work_item_id not in closed_ids
+    ]
     today_hours = sum_deduped_hours(week_entries, on_date=today)
     week_hours = sum_deduped_hours(week_entries, period_start=start, period_end=end)
 

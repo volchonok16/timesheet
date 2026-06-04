@@ -42,6 +42,23 @@ def test_parse_list_delta_uses_period_date_not_creation() -> None:
     assert rows[1].period_date == date(2026, 6, 5)
 
 
+def test_parse_period_date_dmY() -> None:
+    rows = parse_list_delta_payload(
+        {
+            "ListDelta": [
+                {
+                    "ID": 1,
+                    "PeriodDate": "5-6-2026",
+                    "Duration": 480,
+                    "AD_UserID": "T2RU\\user",
+                }
+            ]
+        },
+        work_item_id=1,
+    )
+    assert rows[0].period_date == date(2026, 6, 5)
+
+
 def test_delta_user_matches_auth() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",

@@ -37,6 +37,8 @@ export type Timesheet = {
   view: 'week' | 'month'
   dayTotals: { date: string; hours: number }[]
   totalHours: number
+  closedDayTotals?: { date: string; hours: number }[]
+  closedTotalHours?: number
   groups: TimesheetGroup[]
   closedGroups: TimesheetGroup[]
 }

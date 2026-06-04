@@ -215,10 +215,18 @@ export default function WeekGrid({ timesheet, periodStart, periodEnd, onAddTime 
         scrollable
       />
       <GroupSection
-        title="Закрытые задачи"
+        title={
+          timesheet.closedTotalHours
+            ? `Закрытые задачи — ${formatHours(timesheet.closedTotalHours)} ч`
+            : 'Закрытые задачи'
+        }
         groups={timesheet.closedGroups}
         days={days}
-        dayTotals={dayTotals}
+        dayTotals={
+          timesheet.closedDayTotals?.length
+            ? new Map(timesheet.closedDayTotals.map((item) => [item.date, item.hours]))
+            : dayTotals
+        }
         onAddTime={onAddTime}
         scrollable
       />

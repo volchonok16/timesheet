@@ -113,8 +113,13 @@ def require_tfs_auth(x_session_id: str | None = Header(default=None, alias="X-Se
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "version": settings.app_version}
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "version": settings.app_version,
+        "tfsTsapiEnabled": settings.tfs_tsapi_enabled,
+        "trackingStreamEnabled": settings.tracking_stream_enabled,
+    }
 
 
 @app.get("/api/auth/defaults", response_model=AuthDefaultsOut)

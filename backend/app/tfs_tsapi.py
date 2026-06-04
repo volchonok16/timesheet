@@ -50,7 +50,24 @@ def _parse_period_date(raw: Any) -> date | None:
     try:
         return date.fromisoformat(text[:10])
     except ValueError:
-        return None
+        pass
+    for sep in (".", "-", "/"):
+        parts = text.split(sep)
+        if len(parts) != 3:
+            continue
+        try:
+            a, b, c = (int(parts[0]), int(parts[1]), int(parts[2]))
+        except ValueError:
+            continue
+        if c < 100:
+            c += 2000
+        if a > 31:
+            year, month, day = a, b, c
+        else:
+            day, month, year = a, b, c
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            return date(year, month, day)
+    return None
 
 
 def parse_list_delta_payload(

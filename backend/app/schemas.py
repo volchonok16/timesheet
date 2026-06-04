@@ -131,6 +131,8 @@ class TimesheetOut(ApiModel):
     view: Literal["week", "month"]
     day_totals: list[DayTotalOut]
     total_hours: float
+    closed_day_totals: list[DayTotalOut] = Field(default_factory=list)
+    closed_total_hours: float = 0
     groups: list[TimesheetGroupOut]
     closed_groups: list[TimesheetGroupOut] = Field(default_factory=list)
 
