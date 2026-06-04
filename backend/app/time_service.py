@@ -206,6 +206,8 @@ def timesheet_parent_ids(
     view: str,
     recent_limit: int = 30,
 ) -> list[int]:
+    """Как /track в Oscar: только ЗНИ/требования, по которым есть ваши часы в периоде."""
+    del recent_limit  # недавние из поиска — не в сетку табеля
     end = period_end(period_start, view)
     entry_ids = db.scalars(
         select(TimeEntry.parent_work_item_id)
@@ -213,18 +215,12 @@ def timesheet_parent_ids(
             TimeEntry.account_key == auth.account_key,
             TimeEntry.entry_date >= period_start,
             TimeEntry.entry_date <= end,
+            TimeEntry.hours > 0,
             entry_ownership_clause(auth),
         )
         .distinct()
     ).all()
-    recent_ids = [row.id for row in list_recent(db, auth, limit=recent_limit)]
-    merged: list[int] = []
-    seen: set[int] = set()
-    for parent_id in [*recent_ids, *entry_ids]:
-        if parent_id not in seen:
-            seen.add(parent_id)
-            merged.append(parent_id)
-    return merged
+    return list(entry_ids)
 
 
 def touch_recent(db: Session, auth: TfsAuth, item: dict[str, Any]) -> None:
@@ -525,7 +521,7 @@ def build_timesheet(
     total = 0.0
 
     parent_map = {int(item["id"]): item for item in parent_items}
-    seen_parents = set(by_parent.keys()) | set(parent_map.keys())
+    seen_parents = set(by_parent.keys())
     tracking_by_parent: dict[int, set[int]] = defaultdict(set)
     if seen_parents:
         for parent_id, tracking_id in db.execute(
@@ -578,32 +574,17 @@ def build_timesheet(
             if entry.tracking_work_item_id is not None:
                 known_tracking_ids.add(entry.tracking_work_item_id)
 
-        child_items = [
-            child
-            for child in (children_by_parent or {}).get(parent_id, [])
-            if is_app_tracking_task(child, known_tracking_ids=known_tracking_ids)
+        tracking_rows = [
+            row for row in tracking_map.values() if row.total_hours > 0
         ]
-        for child in child_items:
-            child_id = int(child["id"])
-            if child_id in {row.tracking_work_item_id for row in tracking_map.values()}:
-                continue
-            title = str(child.get("title") or f"#{child_id}")
-            role, activity = parse_tracking_title(title)
-            tracking_map[(role, activity, child_id)] = TrackingRowOut(
-                tracking_work_item_id=child_id,
-                role=role or "—",
-                activity=activity or title,
-                title=title,
-                tfs_url=str(child.get("tfsUrl") or ""),
-            )
-            known_tracking_ids.add(child_id)
-
-        group_total = round(sum(row.total_hours for row in tracking_map.values()), 2)
+        group_total = round(sum(row.total_hours for row in tracking_rows), 2)
+        if group_total <= 0:
+            continue
         total += group_total
         group = TimesheetGroupOut(
             parent=parent_out,
-            children=[work_item_out(child) for child in child_items],
-            tracking_rows=sorted(tracking_map.values(), key=lambda row: row.title),
+            children=[],
+            tracking_rows=sorted(tracking_rows, key=lambda row: row.title),
             total_hours=group_total,
         )
         if parent_out.state in CLOSED_STATES:

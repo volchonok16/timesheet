@@ -89,15 +89,15 @@ def test_parse_history_lines() -> None:
     assert slices[0].hours == 2.0
 
 
-def test_completed_work_not_imported() -> None:
+def test_completed_work_delta_imported_by_revision_date() -> None:
     tokens, strong = _pat_user_token_sets()
     update = _update_with_author(
         rev=1,
-        revised_date="2026-06-04T00:00:00Z",
+        revised_date="2026-06-04T10:30:00Z",
         author_display="Петров Пётр",
         author_unique="MAIN\\petrov",
         fields={
-            "Microsoft.VSTS.Scheduling.CompletedWork": {"oldValue": 0, "newValue": 100},
+            "Microsoft.VSTS.Scheduling.CompletedWork": {"oldValue": 2, "newValue": 8},
         },
     )
     slices = aggregate_slices_for_task(
@@ -107,7 +107,9 @@ def test_completed_work_not_imported() -> None:
         current_user_tokens=tokens,
         current_user_strong_tokens=strong,
     )
-    assert slices == []
+    assert len(slices) == 1
+    assert slices[0].entry_date == date(2026, 6, 4)
+    assert slices[0].hours == 6.0
 
 
 def test_only_current_user_revisions_imported() -> None:
@@ -206,6 +208,23 @@ def test_history_increment_skips_previous_lines() -> None:
         },
     }
     assert _history_increment_text(fields) == "2026-06-03: +3ч — новое"
+
+
+def test_history_increment_strips_html() -> None:
+    update = _update_with_author(
+        rev=4,
+        revised_date="2026-06-04T10:00:00Z",
+        author_display="Петров Пётр",
+        author_unique="MAIN\\petrov",
+        fields={
+            "System.History": {
+                "newValue": "<div>2026-06-04: +8ч &mdash; работа</div>",
+            },
+        },
+    )
+    slices = parse_update_time_slices(update, tracking_work_item_id=1001)
+    assert len(slices) == 1
+    assert slices[0].hours == 8.0
 
 
 def test_filter_updates_skips_old_revisions() -> None:

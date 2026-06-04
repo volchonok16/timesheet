@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -18,11 +19,10 @@ from app.tfs_client import TfsClient
 from app.time_service import (
     ROLE_LABELS,
     backfill_entry_owners,
-    list_recent,
+    entry_ownership_clause,
     owner_unique_name_for,
     parse_tracking_title,
     period_end,
-    timesheet_parent_ids,
     touch_recent,
 )
 
@@ -30,6 +30,8 @@ HISTORY_LINE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}):\s*([+-])([\d.,]+)ч(?:\s*[—-]\s*(.*))?$",
     re.MULTILINE,
 )
+
+HTML_TAG = re.compile(r"<[^>]+>")
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ def _history_increment_text(fields: dict[str, Any]) -> str:
     """Только текст, добавленный в этой ревизии (не весь тред комментариев)."""
     history_raw = fields.get("System.History")
     if isinstance(history_raw, str):
-        return history_raw.strip()
+        return _plain_history_text(history_raw.strip())
     if not isinstance(history_raw, dict):
         return ""
     new_val = str(history_raw.get("newValue") or "").strip()
@@ -85,9 +87,9 @@ def _history_increment_text(fields: dict[str, Any]) -> str:
         return ""
     old_val = str(history_raw.get("oldValue") or "").strip()
     if not old_val:
-        return new_val
+        return _plain_history_text(new_val)
     if new_val.startswith(old_val):
-        return new_val[len(old_val) :].lstrip("\n\r")
+        return _plain_history_text(new_val[len(old_val) :].lstrip("\n\r"))
     old_lines = {line.strip() for line in old_val.splitlines() if line.strip()}
     if not old_lines:
         return ""
@@ -96,7 +98,15 @@ def _history_increment_text(fields: dict[str, Any]) -> str:
         return ""
     if all(not HISTORY_LINE.match(line) for line in added):
         return ""
-    return "\n".join(added)
+    return _plain_history_text("\n".join(added))
+
+
+def _plain_history_text(value: str) -> str:
+    """TFS часто отдаёт System.History как HTML; для парсинга нужна обычная строка."""
+    text = html.unescape(value)
+    text = re.sub(r"</(?:div|p|br|li|tr)>", "\n", text, flags=re.IGNORECASE)
+    text = HTML_TAG.sub("", text)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 def parse_update_time_slices(
@@ -126,6 +136,18 @@ def parse_update_time_slices(
                 sync_key=f"tfs:{tracking_work_item_id}:rev{rev}:h{index}",
             )
         )
+
+    if not slices:
+        delta = _completed_work_delta(fields)
+        if delta is not None:
+            slices.append(
+                ParsedTimeSlice(
+                    entry_date=revised_date,
+                    hours=delta,
+                    comment="Completed Work",
+                    sync_key=f"tfs:{tracking_work_item_id}:rev{rev}:cw",
+                )
+            )
 
     return slices
 
@@ -254,7 +276,7 @@ def filter_updates_for_sync(
     current_user_tokens: set[str],
     current_user_strong_tokens: set[str],
 ) -> list[dict[str, Any]]:
-    """Релевантные ревизии периода: только автор PAT и строки истории списаний."""
+    """Релевантные ревизии периода: только автор PAT и изменения часов/истории."""
     cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
     filtered: list[dict[str, Any]] = []
     for update in updates:
@@ -268,7 +290,7 @@ def filter_updates_for_sync(
         if revised < cutoff:
             continue
         fields = as_update_fields(update)
-        if "System.History" in fields:
+        if "System.History" in fields or "Microsoft.VSTS.Scheduling.CompletedWork" in fields:
             filtered.append(update)
     return filtered
 
@@ -453,8 +475,8 @@ async def collect_tracking_targets(
     current_user_strong_tokens: set[str],
 ) -> list[TrackingTarget]:
     """
-    Как сетка /track: родители (ЗНИ/требования) пользователя → все дочерние «Роль — активность».
-    Часы потом берутся только из ваших ревизий System.History.
+    Задачи «Роль — активность», где вы списывали время (@Me / ваша история в периоде).
+    Не тянем всех детей под чужими ЗНИ из «недавних».
     """
     seen: set[int] = set()
     targets: list[TrackingTarget] = []
@@ -493,43 +515,14 @@ async def collect_tracking_targets(
             TimeEntry.tracking_work_item_id.isnot(None),
             TimeEntry.entry_date >= period_start,
             TimeEntry.entry_date <= end,
+            TimeEntry.hours > 0,
+            entry_ownership_clause(auth),
         )
     ).all()
     for tracking_id, parent_id in local_rows:
         if tracking_id is None or parent_id is None:
             continue
         add(int(tracking_id), int(parent_id))
-
-    parent_ids: list[int] = []
-    for row in list_recent(db, auth, limit=settings.tfs_sync_max_parents):
-        parent_ids.append(row.id)
-    parent_ids.extend(
-        timesheet_parent_ids(db, auth, period_start=period_start, view=view)
-    )
-    if include_wiql:
-        parent_ids.extend(
-            await client.find_parent_work_items_for_me(changed_since=lookback)
-        )
-    parent_seen: set[int] = set()
-    unique_parents: list[int] = []
-    for parent_id in parent_ids:
-        if parent_id not in parent_seen:
-            parent_seen.add(parent_id)
-            unique_parents.append(parent_id)
-    unique_parents = unique_parents[: settings.tfs_sync_max_parents]
-
-    if unique_parents:
-        child_lists = await asyncio.gather(
-            *[client.get_child_tasks(pid) for pid in unique_parents],
-            return_exceptions=True,
-        )
-        for parent_id, children in zip(unique_parents, child_lists):
-            if isinstance(children, BaseException):
-                continue
-            for child in children:
-                if not is_tracking_child_item(child):
-                    continue
-                add(int(child["id"]), parent_id)
 
     return targets[: settings.tfs_sync_max_tasks]
 
