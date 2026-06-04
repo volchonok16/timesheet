@@ -43,7 +43,7 @@ function GroupSection({
   days: Date[]
   dayTotals: Map<string, number>
   onAddTime: (item: WorkItem, date: string, role?: string, activity?: string) => void
-  /** Внутренний скролл тела таблицы (для длинного списка активных задач). */
+  /** Внутренний скролл тела таблицы (длинные списки активных/закрытых задач). */
   scrollable?: boolean
 }) {
   if (groups.length === 0) return null
@@ -220,6 +220,7 @@ export default function WeekGrid({ timesheet, periodStart, periodEnd, onAddTime 
         days={days}
         dayTotals={dayTotals}
         onAddTime={onAddTime}
+        scrollable
       />
 
       {timesheet.groups.length === 0 && timesheet.closedGroups.length === 0 && (

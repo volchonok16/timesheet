@@ -16,6 +16,8 @@
   --success-soft: rgba(5, 150, 105, 0.12);
   --warn: #d97706;
   --warn-soft: rgba(251, 191, 36, 0.22);
+  --over: #6d28d9;
+  --over-soft: rgba(124, 58, 237, 0.2);
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.14);
   --weekend-soft: rgba(124, 58, 237, 0.1);
@@ -1246,6 +1248,14 @@ h3 {
   font-weight: 700;
 }
 
+.cell-btn.day-over,
+.cell-btn.filled.day-over {
+  border-color: rgba(124, 58, 237, 0.45);
+  background: var(--over-soft);
+  color: var(--over);
+  font-weight: 700;
+}
+
 .cell-btn.day-weekend,
 .cell-btn.filled.day-weekend {
   border-color: rgba(124, 58, 237, 0.22);
@@ -1306,6 +1316,11 @@ h3 {
   color: var(--success);
 }
 
+.cell-add-btn.day-over {
+  border-color: rgba(124, 58, 237, 0.35);
+  color: var(--over);
+}
+
 .cell-add-btn.day-weekend {
   border-color: rgba(124, 58, 237, 0.28);
   color: #5b21b6;
@@ -1330,6 +1345,15 @@ h3 {
 
 .timesheet-grid td.day-met {
   background: rgba(5, 150, 105, 0.06);
+}
+
+.timesheet-grid th.day-over,
+.timesheet-grid td.day-over {
+  background: rgba(124, 58, 237, 0.08);
+}
+
+.timesheet-grid th.day-over {
+  color: var(--over);
 }
 
 .day-total.day-empty {
@@ -1359,6 +1383,15 @@ h3 {
   color: var(--success);
 }
 
+.day-total.day-over {
+  background: var(--over-soft);
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.day-total.day-over strong {
+  color: var(--over);
+}
+
 .day-total.day-weekend {
   background: var(--weekend-soft);
   border-color: rgba(124, 58, 237, 0.22);
@@ -1381,6 +1414,12 @@ h3 {
 
 .hours-positive.day-met {
   color: var(--success);
+}
+
+.hours-positive.day-over,
+.hours-zero.day-over {
+  color: var(--over);
+  font-weight: 600;
 }
 
 .hours-positive.day-weekend,
@@ -1861,6 +1900,16 @@ h3 {
 .calendar-day.day-met .day-num,
 .calendar-day.day-met strong {
   color: var(--success);
+}
+
+.calendar-day.day-over {
+  background: var(--over-soft);
+  border-color: rgba(124, 58, 237, 0.4);
+}
+
+.calendar-day.day-over .day-num,
+.calendar-day.day-over strong {
+  color: var(--over);
 }
 
 .calendar-day.day-weekend {

@@ -225,7 +225,7 @@ export function isWeekend(date: Date): boolean {
   return day === 0 || day === 6
 }
 
-export type DayCellStatus = 'future' | 'weekend' | 'empty' | 'under' | 'met'
+export type DayCellStatus = 'future' | 'weekend' | 'empty' | 'under' | 'met' | 'over'
 
 export function dayCellStatus(date: Date, hours: number): DayCellStatus {
   if (isWeekend(date)) return 'weekend'
@@ -236,6 +236,7 @@ export function dayCellStatus(date: Date, hours: number): DayCellStatus {
   probe.setHours(0, 0, 0, 0)
   if (probe > today) return 'future'
   if (hours <= 0) return 'empty'
+  if (hours > DAILY_HOURS_GOAL) return 'over'
   if (hours >= DAILY_HOURS_GOAL) return 'met'
   return 'under'
 }
@@ -245,6 +246,7 @@ export function dayStatusClass(status: DayCellStatus): string {
   if (status === 'empty') return 'day-empty'
   if (status === 'under') return 'day-under'
   if (status === 'met') return 'day-met'
+  if (status === 'over') return 'day-over'
   return ''
 }
 
