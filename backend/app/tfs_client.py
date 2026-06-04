@@ -449,6 +449,24 @@ class TfsClient:
                         return ids
         return ids
 
+    async def find_tracking_tasks_assigned_to_user_recent(
+        self,
+        *,
+        unique_name: str,
+        limit: int = 80,
+    ) -> list[int]:
+        """Назначенные задачи без фильтра ChangedDate — часы в «Время» могут быть без смены assignee."""
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        user = wiql_quote(unique_name.strip())
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [System.AssignedTo] = {user} "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        return await self._wiql_task_ids(wiql, limit=limit)
+
     async def find_tracking_tasks_assigned_to_user(
         self,
         *,

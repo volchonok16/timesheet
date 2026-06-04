@@ -177,6 +177,7 @@ class TimesheetSyncOut(ApiModel):
     removed_dupes: int = 0
     deltas_in_period: int = 0
     deltas_total: int = 0
+    tsapi_probe_rows: int | None = None
     period_start: date
     period_end: date
     cached: bool = False

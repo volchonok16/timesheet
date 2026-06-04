@@ -619,6 +619,12 @@ async def collect_tracking_targets(
                     changed_since=lookback,
                 )
             )
+            wiql_ids.extend(
+                await client.find_tracking_tasks_assigned_to_user_recent(
+                    unique_name=login_name,
+                    limit=settings.tfs_sync_max_tasks,
+                )
+            )
     for task_id in wiql_ids:
         parent_id = await client.get_parent_work_item_id(task_id)
         if parent_id is not None:
@@ -630,6 +636,28 @@ async def collect_tracking_targets(
         parent_id = await client.get_parent_work_item_id(task_id)
         if parent_id is not None:
             add(task_id, parent_id)
+
+    if include_wiql:
+        parent_lookback = period_start - timedelta(days=max(settings.tfs_sync_update_lookback_days, 60))
+        parent_ids_wiql = await client.find_parent_work_items_for_me(
+            changed_since=parent_lookback,
+            limit=settings.tfs_sync_max_parents,
+        )
+        for parent_id in parent_ids_wiql:
+            if len(targets) >= settings.tfs_sync_max_tasks:
+                break
+            try:
+                for child in await client.get_child_tasks(parent_id):
+                    if not is_tracking_child_item(child):
+                        continue
+                    cid = int(child.get("id") or 0)
+                    if not cid:
+                        continue
+                    add(cid, parent_id)
+                    if len(targets) >= settings.tfs_sync_max_tasks:
+                        break
+            except Exception:
+                continue
 
     end = period_end(period_start, view)
     local_rows = db.execute(

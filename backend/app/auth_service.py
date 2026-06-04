@@ -9,6 +9,7 @@ from app.auth_sessions import create_session
 from app.db import SessionLocal
 from app.time_service import backfill_entry_owners
 from app.config import settings
+from app.tfs_tsapi import probe_tsapi_list_delta_rows
 from app.http_auth import auth_attempts
 from app.schemas import AuthLoginOut
 from app.tfs_auth import TfsAuth, attach_tfs_identity
@@ -98,6 +99,27 @@ async def ensure_auth_identity(client: TfsClient, auth: TfsAuth) -> TfsAuth:
     return auth
 
 
+async def _verify_tsapi_for_pat(auth: TfsAuth) -> None:
+    if not settings.tfs_tsapi_enabled or not auth.pat:
+        return
+    probe_id = settings.tfs_tsapi_probe_task_id
+    if not probe_id:
+        return
+    rows = await probe_tsapi_list_delta_rows(auth, probe_id)
+    if rows > 0:
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"TFS PAT принят, но вкладка «Время» (tsapi) пуста для задачи #{probe_id}. "
+            "На tfs.t2.ru часы видны в браузере через Windows-вход, а не через PAT. "
+            "Войдите в mateplace режимом «Учётная запись» (логин TELE2\\user и пароль AD) "
+            "или задайте TFS_TSAPI_PROBE_TASK_ID на сервере и проверьте scope PAT (Full). "
+            "Логин при PAT: T2RU\\user или user@t2.ru."
+        ),
+    )
+
+
 async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
     if not auth.has_credentials():
         raise HTTPException(status_code=400, detail="Укажите логин и пароль, PAT или Cookie.")
@@ -108,6 +130,7 @@ async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
         resolved = await ensure_auth_identity(client, resolved)
     finally:
         await client.close()
+    await _verify_tsapi_for_pat(resolved)
     if not resolved.identity_match_tokens():
         raise HTTPException(
             status_code=401,

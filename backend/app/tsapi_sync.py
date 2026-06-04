@@ -13,7 +13,12 @@ from app.config import settings
 from app.db import AccountSyncState, TimeEntry
 from app.tfs_auth import TfsAuth
 from app.tfs_client import TfsClient
-from app.tfs_tsapi import TfsTsapiClient, TsapiDeltaRow, delta_user_matches_auth
+from app.tfs_tsapi import (
+    TfsTsapiClient,
+    TsapiDeltaRow,
+    delta_user_matches_auth,
+    probe_tsapi_list_delta_rows,
+)
 from app.time_service import (
     delete_duplicate_entries_in_period,
     owner_unique_name_for,
@@ -22,6 +27,7 @@ from app.time_service import (
     touch_recent,
 )
 from app.time_sync import (
+    TrackingTarget,
     collect_tracking_targets,
     is_tracking_child_item,
     load_existing_sync_keys,
@@ -60,6 +66,19 @@ def _should_scan_tracking_task(title: str, task_id: int) -> bool:
     if not title:
         return True
     return is_tracking_child_item({"id": task_id, "title": title, "kind": "task"})
+
+
+async def _ensure_probe_tracking_target(
+    tfs: TfsClient, targets: list, *, probe_task_id: int | None
+) -> list:
+    if not probe_task_id:
+        return targets
+    if any(t.task_id == probe_task_id for t in targets):
+        return targets
+    parent_id = await tfs.get_parent_work_item_id(probe_task_id)
+    if parent_id is None:
+        return targets
+    return [TrackingTarget(task_id=probe_task_id, parent_id=parent_id), *targets]
 
 
 async def _collect_pending_tsapi_entries(
@@ -191,6 +210,7 @@ async def sync_from_tsapi(
 
     tokens = user_tokens or auth.identity_match_tokens()
     strong = user_strong_tokens or auth.identity_strong_tokens()
+    tsapi_probe_rows = 0
 
     tfs = TfsClient(auth)
     try:
@@ -204,7 +224,15 @@ async def sync_from_tsapi(
             current_user_tokens=tokens,
             current_user_strong_tokens=strong,
         )
+        targets = await _ensure_probe_tracking_target(
+            tfs, targets, probe_task_id=settings.tfs_tsapi_probe_task_id
+        )
         targets = targets[: settings.tfs_sync_max_tasks]
+        tsapi_probe_rows = 0
+        if settings.tfs_tsapi_probe_task_id:
+            tsapi_probe_rows = await probe_tsapi_list_delta_rows(
+                auth, settings.tfs_tsapi_probe_task_id
+            )
         task_ids = [t.task_id for t in targets]
         parent_ids = list({t.parent_id for t in targets})
         titles_by_id: dict[int, str] = {}
@@ -241,18 +269,35 @@ async def sync_from_tsapi(
     elif force and not pending:
         _clear_sync_state(db, auth, period_start=period_start, view=view)
         db.commit()
+        deltas_total = int(scan_stats.get("deltas_total") or 0)
+        probe_hint = ""
+        if settings.tfs_tsapi_probe_task_id and tsapi_probe_rows == 0 and auth.pat:
+            probe_hint = (
+                f" Проверка задачи #{settings.tfs_tsapi_probe_task_id}: "
+                "PAT не читает tsapi «Время» — войдите с паролем (Учётная запись) "
+                "или уточните scope PAT."
+            )
+        elif deltas_total == 0 and auth.pat:
+            probe_hint = (
+                " PAT не возвращает ListDelta: попробуйте вход «Учётная запись» (пароль AD) "
+                "или T2RU\\user в поле логина."
+            )
         return {
             "imported": 0,
             "skipped": skipped,
             "tasks_scanned": tasks_scanned,
             "purged": 0,
+            "deltas_in_period": 0,
+            "deltas_total": deltas_total,
+            "tsapi_probe_rows": tsapi_probe_rows,
             "period_start": period_start,
             "period_end": end,
             "cached": False,
             "source": "tsapi",
             "message": (
-                "TFS «Время»: за неделю нет ваших ListDelta (PeriodDate). "
-                "Старые строки в табеле не удалены."
+                "TFS «Время»: за неделю нет ListDelta (PeriodDate) на отсканированных задачах."
+                " Старые строки в табеле не удалены."
+                + probe_hint
             ),
         }
 
@@ -308,6 +353,11 @@ async def sync_from_tsapi(
         message = (
             "TFS «Время»: есть списания, но не в выбранной неделе (смотрите PeriodDate в TFS)."
         )
+    elif deltas_in_period == 0 and auth.pat and deltas_total == 0:
+        message = (
+            "TFS tsapi: PAT не отдаёт вкладку «Время» (пустой ListDelta). "
+            "Войдите с паролем Windows (режим «Учётная запись») или проверьте логин T2RU\\user."
+        )
     elif deltas_in_period == 0:
         message = (
             "TFS «Время»: за эту неделю нет строк ListDelta (PeriodDate) на ваших задачах."
@@ -325,6 +375,7 @@ async def sync_from_tsapi(
         "removed_dupes": removed_dupes,
         "deltas_in_period": deltas_in_period,
         "deltas_total": deltas_total,
+        "tsapi_probe_rows": tsapi_probe_rows if settings.tfs_tsapi_probe_task_id else None,
         "period_start": period_start,
         "period_end": end,
         "cached": False,

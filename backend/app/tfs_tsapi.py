@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
-from app.http_auth import build_http_auth, pat_http_auth_candidates
+from app.http_auth import build_http_auth, pat_http_auth_candidates, password_auth_candidates
 from app.tfs_auth import TfsAuth
 
 
@@ -139,20 +139,70 @@ def delta_user_matches_auth(delta_user: str, auth: TfsAuth) -> bool:
     return bool(needle_tails & auth_tails)
 
 
+def _tsapi_request_headers(auth: TfsAuth) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json, text/javascript, */*",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    collection = (auth.base_url or settings.tfs_base_url).rstrip("/")
+    headers["Referer"] = f"{collection}/"
+    if auth.cookie:
+        headers["Cookie"] = auth.cookie
+    return headers
+
+
+def _tsapi_auth_attempts(auth: TfsAuth) -> list[tuple[str, Any]]:
+    """Пары (метка, httpx auth) для ListDelta — PAT, NTLM, cookie."""
+    attempts: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+
+    def push(label: str, value: Any) -> None:
+        if label not in seen:
+            seen.add(label)
+            attempts.append((label, value))
+
+    if auth.pat:
+        for user, pat in pat_http_auth_candidates(auth):
+            label = f"Basic ({user or ':PAT'})"
+            push(label, (user, pat))
+    elif auth.username and auth.password:
+        for attempt in password_auth_candidates(auth):
+            if attempt.use_ntlm:
+                try:
+                    from httpx_ntlm import HttpNtlmAuth
+
+                    push(attempt.label, HttpNtlmAuth(attempt.auth.username, attempt.auth.password))
+                except ImportError:
+                    pass
+            else:
+                push(attempt.label, (attempt.auth.username, attempt.auth.password))
+    elif auth.cookie:
+        push("Cookie", None)
+    else:
+        built = build_http_auth(auth, use_ntlm=not auth.pat)
+        if built is not None:
+            push("default", built)
+    return attempts
+
+
+async def probe_tsapi_list_delta_rows(auth: TfsAuth, work_item_id: int) -> int:
+    client = TfsTsapiClient(auth)
+    try:
+        rows = await client.get_work_item_deltas(work_item_id, take=20)
+        return len(rows)
+    finally:
+        await client.close()
+
+
 class TfsTsapiClient:
     def __init__(self, auth: TfsAuth) -> None:
-        headers = {
-            "Accept": "application/json, text/javascript, */*",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        if auth.cookie:
-            headers["Cookie"] = auth.cookie
         self.auth = auth
         self.base_url = resolve_tsapi_base_url(auth.base_url)
+        self.headers = _tsapi_request_headers(auth)
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
-            auth=build_http_auth(auth, use_ntlm=False),
-            headers=headers,
+            auth=build_http_auth(auth, use_ntlm=bool(auth.username and auth.password and not auth.pat)),
+            headers=self.headers,
             timeout=settings.tfs_timeout_seconds,
             verify=settings.tfs_verify_tls,
             follow_redirects=True,
@@ -166,22 +216,18 @@ class TfsTsapiClient:
         *,
         path: str,
         params: dict[str, Any],
-        user: str,
-        pat: str,
+        http_auth: Any | None,
     ) -> list[TsapiDeltaRow]:
         work_item_id = int(params["WI_ID"])
-        if self.auth.pat:
-            async with httpx.AsyncClient(
-                base_url=self.base_url,
-                auth=(user, pat),
-                headers=self.client.headers,
-                timeout=settings.tfs_timeout_seconds,
-                verify=settings.tfs_verify_tls,
-                follow_redirects=True,
-            ) as probe:
-                response = await probe.get(path, params=params)
-        else:
-            response = await self.client.get(path, params=params)
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            auth=http_auth,
+            headers=self.headers,
+            timeout=settings.tfs_timeout_seconds,
+            verify=settings.tfs_verify_tls,
+            follow_redirects=True,
+        ) as probe:
+            response = await probe.get(path, params=params)
         response.raise_for_status()
         payload = response.json()
         return parse_list_delta_payload(payload, work_item_id=work_item_id)
@@ -192,13 +238,12 @@ class TfsTsapiClient:
         path = "/WorkItemFormTab/GetListDeltaByWorkitemIDMod"
         params: dict[str, Any] = {"WI_ID": work_item_id, "page": page, "take": take}
         errors: list[str] = []
-        auth_pairs = pat_http_auth_candidates(self.auth) or [("", "")]
+        attempts = _tsapi_auth_attempts(self.auth) or [("default", build_http_auth(self.auth, use_ntlm=False))]
         best: list[TsapiDeltaRow] = []
-        for user, pat in auth_pairs:
-            label = user or "(пустой логин)"
+        for label, http_auth in attempts:
             try:
                 rows = await self._fetch_list_delta_page(
-                    path=path, params=params, user=user, pat=pat
+                    path=path, params=params, http_auth=http_auth
                 )
                 if len(rows) > len(best):
                     best = rows

@@ -38,6 +38,11 @@ class Settings(BaseSettings):
 
     tfs_tsapi_enabled: bool = Field(default=True, alias="TFS_TSAPI_ENABLED")
     tfs_tsapi_base_url: str | None = Field(default=None, alias="TFS_TSAPI_BASE_URL")
+    tfs_tsapi_probe_task_id: int | None = Field(
+        default=None,
+        alias="TFS_TSAPI_PROBE_TASK_ID",
+        description="ID дочерней задачи «Роль - активность» для проверки PAT/tsapi при входе",
+    )
 
     task_type_name: str = Field(default="Задача", alias="TFS_TASK_TYPE")
     requirement_type_name: str = Field(default="Требование", alias="TFS_REQUIREMENT_TYPE")
