@@ -187,6 +187,24 @@ git_pull_if_requested() {
   git pull --ff-only
 }
 
+stop_compose_port_conflicts() {
+  # Старый стек из папки prog или повторный up без down занимает :8000 / :5173
+  local project
+  for project in timesheet prog; do
+    if docker compose -p "$project" -f docker-compose.yml -f docker-compose.prod.yml ps -q 2>/dev/null | grep -q .; then
+      log "Останавливаем compose-проект «${project}»…"
+      docker compose -p "$project" -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans 2>/dev/null || true
+    fi
+  done
+  local id port
+  for port in 8000 5173; do
+    for id in $(docker ps -q --filter "publish=127.0.0.1:${port}" 2>/dev/null); do
+      warn "Порт ${port} занят контейнером ${id} — останавливаем"
+      docker stop "$id" 2>/dev/null || true
+    done
+  done
+}
+
 deploy_compose() {
   ensure_env_file
   load_domains_from_env
@@ -197,6 +215,10 @@ deploy_compose() {
   log "Домен: $DOMAIN | API: $API_DOMAIN"
 
   ensure_docker_running
+
+  log "Остановка предыдущих контейнеров…"
+  "${COMPOSE[@]}" down --remove-orphans 2>/dev/null || true
+  stop_compose_port_conflicts
 
   log "Docker Compose (production)…"
   "${COMPOSE[@]}" up -d --build
