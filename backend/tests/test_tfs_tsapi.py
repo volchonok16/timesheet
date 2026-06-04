@@ -7,6 +7,13 @@ from app.tfs_tsapi import (
     resolve_tsapi_base_url,
 )
 
+# Обезличенные фикстуры (не реальные сотрудники).
+SAMPLE_USER_T2 = "T2RU\\sample.user"
+SAMPLE_USER_TELE2 = "TELE2\\sample.user"
+SAMPLE_EMAIL = "sample.user@t2.ru"
+OTHER_USER_T2 = "T2RU\\other.user"
+OTHER_EMAIL = "other.user@t2.ru"
+
 SAMPLE = {
     "ListDelta": [
         {
@@ -14,14 +21,14 @@ SAMPLE = {
             "PeriodDate": "2026-06-01T00:00:00",
             "CreationDate": "2026-06-04T16:38:03.473",
             "Duration": 480,
-            "AD_UserID": "T2RU\\alexander.taraskin",
+            "AD_UserID": SAMPLE_USER_T2,
         },
         {
             "ID": 2509302,
             "PeriodDate": "2026-06-05T00:00:00",
             "CreationDate": "2026-06-04T16:38:33.6",
             "Duration": 480,
-            "AD_UserID": "T2RU\\alexander.taraskin",
+            "AD_UserID": SAMPLE_USER_T2,
         },
     ]
 }
@@ -63,10 +70,10 @@ def test_delta_user_matches_pat_with_tfs_unique_name() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
-        username="alexander.taraskin@t2.ru",
-        tfs_unique_name="T2RU\\alexander.taraskin",
+        username=SAMPLE_EMAIL,
+        tfs_unique_name=SAMPLE_USER_T2,
     )
-    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+    assert delta_user_matches_auth(SAMPLE_USER_T2, auth)
 
 
 def test_delta_user_matches_login_domain_alias() -> None:
@@ -74,28 +81,28 @@ def test_delta_user_matches_login_domain_alias() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
-        username="TELE2\\alexander.taraskin",
+        username=SAMPLE_USER_TELE2,
     )
-    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+    assert delta_user_matches_auth(SAMPLE_USER_T2, auth)
 
 
 def test_delta_user_matches_email_expands_t2ru() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
-        username="alexander.taraskin@t2.ru",
+        username=SAMPLE_EMAIL,
     )
     tokens = auth.identity_match_tokens()
-    assert "t2ru\\alexander.taraskin" in tokens
-    assert delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
+    assert "t2ru\\sample.user" in tokens
+    assert delta_user_matches_auth(SAMPLE_USER_T2, auth)
 
 
 def test_delta_user_rejects_other_user() -> None:
     auth = TfsAuth(
         base_url="https://tfs.t2.ru/tfs/Main",
         project="Tele2",
-        username="ivanov@t2.ru",
-        tfs_unique_name="T2RU\\ivanov",
+        username=OTHER_EMAIL,
+        tfs_unique_name=OTHER_USER_T2,
     )
-    assert not delta_user_matches_auth("T2RU\\alexander.taraskin", auth)
-    assert delta_user_matches_auth("T2RU\\ivanov", auth)
+    assert not delta_user_matches_auth(SAMPLE_USER_T2, auth)
+    assert delta_user_matches_auth(OTHER_USER_T2, auth)

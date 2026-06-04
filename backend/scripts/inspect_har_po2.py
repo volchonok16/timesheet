@@ -1,8 +1,9 @@
 import json
 import re
-from pathlib import Path
 
-har_path = Path(r"c:\Users\avolc\Downloads\tfs.t2.ru.har")
+from _har_path import resolve_har_path
+
+har_path = resolve_har_path()
 har = json.loads(har_path.read_text(encoding="utf-8"))
 
 patterns = ["Logrocon.PO", "10333", "allowedValues", "picklistItems", "listItems"]

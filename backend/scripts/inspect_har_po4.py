@@ -1,8 +1,9 @@
 import json
 import re
-from pathlib import Path
 
-text = Path(r"c:\Users\avolc\Downloads\tfs.t2.ru.har").read_text(encoding="utf-8")
+from _har_path import resolve_har_path
+
+text = resolve_har_path().read_text(encoding="utf-8")
 
 # decode unicode escapes in json strings
 for term in ["Проект уч", "учета затрат", "Logrocon.PO", "allowedValues"]:

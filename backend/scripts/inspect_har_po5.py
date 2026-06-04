@@ -1,8 +1,9 @@
 import json
 import re
-from pathlib import Path
 
-har = json.loads(Path(r"c:\Users\avolc\Downloads\tfs.t2.ru.har").read_text(encoding="utf-8"))
+from _har_path import resolve_har_path
+
+har = json.loads(resolve_har_path().read_text(encoding="utf-8"))
 
 for entry in har["log"]["entries"]:
     resp = entry.get("response", {}).get("content", {}).get("text") or ""
