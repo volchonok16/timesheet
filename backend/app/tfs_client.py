@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import date
 from typing import Any
 from urllib.parse import quote
@@ -273,81 +274,249 @@ class TfsClient:
             return last_response
         raise httpx.HTTPError(f"GET failed for {path}")
 
+    def _wit_project_prefixes(self) -> list[str]:
+        prefixes = [f"/{self.project}"]
+        if self.project_id and self.project_id != self.project:
+            prefixes.append(f"/{self.project_id}")
+        return prefixes
+
+    def _task_type_names(self) -> list[str]:
+        names: list[str] = []
+        for candidate in (settings.task_type_name, settings.task_type_name.casefold()):
+            if candidate and candidate not in names:
+                names.append(candidate)
+        return names
+
     async def get_work_item_type_field(self, work_item_type: str, field_ref: str) -> dict[str, Any]:
         encoded_type = quote(work_item_type, safe="")
-        path = f"/{self.project}/_apis/wit/workitemtypes/{encoded_type}/fields/{field_ref}"
-        response = await self._get_with_api_versions(path)
-        if response.status_code == 404:
-            response = await self._get_with_api_versions(f"/_apis/wit/fields/{field_ref}")
+        last_response: httpx.Response | None = None
+        for prefix in self._wit_project_prefixes():
+            path = f"{prefix}/_apis/wit/workitemtypes/{encoded_type}/fields/{field_ref}"
+            response = await self._get_with_api_versions(path)
+            last_response = response
+            if response.status_code == 200:
+                payload = response.json()
+                return payload if isinstance(payload, dict) else {}
+        response = await self._get_with_api_versions(f"/_apis/wit/fields/{field_ref}")
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
-    async def get_cost_project_options(self, work_item_type: str | None = None) -> list[str]:
+    def read_cost_project_value(self, item: dict[str, Any]) -> str | None:
         field_ref = settings.cost_project_field
-        options: list[str] = []
+        value = self.read_field_value(item, field_ref)
+        if value:
+            return value
+        fields = as_dict(item.get("fields"))
+        for key, raw in fields.items():
+            key_lower = str(key).casefold()
+            if "project" in key_lower and "control" in key_lower:
+                wrapped = {"fields": {key: raw}}
+                candidate = self.read_field_value(wrapped, key)
+                if candidate:
+                    return candidate
+        return None
 
-        def collect(raw: Any) -> None:
-            if isinstance(raw, list):
-                for item in raw:
-                    if isinstance(item, str) and item.strip():
-                        options.append(item.strip())
-                    elif isinstance(item, dict):
-                        value = item.get("value") or item.get("displayName") or item.get("name")
-                        if isinstance(value, str) and value.strip():
-                            options.append(value.strip())
+    def _parse_fps_allowed_values(self, text: str) -> list[str]:
+        """Справочник из правил формы TFS (FPS), поле project.control ≈ rule id 527."""
+        values: list[str] = []
+        patterns = (
+            r'"527"\s*,\s*1\s*,\s*\["AllowedValues",\s*\[\[(.*?)\]\]\]',
+            r'\\"527\\"\s*,\s*1\s*,\s*\[\\"AllowedValues\\"\s*,\s*\[\[(.*?)\]\]\]',
+            r'\["AllowedValues",\s*\[\[(.*?)\]\]\]',
+            r'\[\\"AllowedValues\\"\s*,\s*\[\[(.*?)\]\]\]',
+        )
+        for pattern in patterns:
+            for block in re.findall(pattern, text, flags=re.DOTALL):
+                for match in re.findall(r'"([^"\\]+(?:\\.[^"\\]*)*)"', block):
+                    cleaned = match.replace('\\"', '"').strip()
+                    if cleaned and cleaned not in values:
+                        values.append(cleaned)
+                if values and "B2B" in " ".join(values[:5]):
+                    return values
+        return values
+
+    async def fetch_cost_projects_from_task_form(self) -> list[str]:
+        """Правила формы «Задача» (как в tfs.t2.ru.har — B2B 2026, Digital Suite, …)."""
+        encoded_type = quote(settings.task_type_name, safe="")
+        paths = [
+            f"/{self.project}/_workitems/edit/new?type={encoded_type}&__rt=fps&__ver=2",
+        ]
+        if self.project_id:
+            paths.append(
+                f"/{self.project_id}/_workitems/edit/new?type={encoded_type}&__rt=fps&__ver=2"
+            )
+        for path in paths:
+            try:
+                response = await self.client.get(path, headers={"Accept": "text/html,*/*"})
+                if response.status_code != 200:
+                    continue
+                values = self._parse_fps_allowed_values(response.text)
+                if values:
+                    return values
+            except httpx.HTTPError:
+                continue
+        return []
+
+    async def query_distinct_cost_projects_wiql(self, *, limit: int = 250) -> list[str]:
+        field_ref = settings.cost_project_field
+        wiql = (
+            "SELECT [System.Id] "
+            "FROM WorkItems "
+            f"WHERE [System.TeamProject] = {wiql_quote(self.project)} "
+            f"AND [System.WorkItemType] = {wiql_quote(settings.task_type_name)} "
+            f"AND [{field_ref}] <> '' "
+            "ORDER BY [System.ChangedDate] DESC"
+        )
+        try:
+            payload = await self.run_wiql(wiql)
+        except httpx.HTTPError:
+            return []
+        ids = [
+            int(item["id"])
+            for item in as_list(payload.get("workItems"))
+            if isinstance(item, dict) and item.get("id") is not None
+        ][:limit]
+        if not ids:
+            return []
+        items = await self.get_work_items_batch(
+            ids,
+            fields=["System.Id", "System.WorkItemType", field_ref],
+        )
+        values: list[str] = []
+        for item in items:
+            value = self.read_cost_project_value(item)
+            if value:
+                values.append(value)
+        return list(dict.fromkeys(values))
+
+    def _collect_picklist_values(self, options: list[str], raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, str):
+            value = raw.strip()
+            if value:
+                options.append(value)
+            return
+        if isinstance(raw, list):
+            for item in raw:
+                self._collect_picklist_values(options, item)
+            return
+        if not isinstance(raw, dict):
+            return
+        for key in ("value", "displayName", "name", "text"):
+            candidate = raw.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                options.append(candidate.strip())
+        for key in ("allowedValues", "items", "picklistItems", "listItems", "values"):
+            if key in raw:
+                self._collect_picklist_values(options, raw[key])
+        if "listMetadata" in raw:
+            self._collect_picklist_values(options, raw["listMetadata"])
+
+    def _merge_cost_project_options(self, *sources: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for source in sources:
+            for value in source:
+                cleaned = value.strip()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                merged.append(cleaned)
+        return merged
+
+    async def get_cost_project_options(self, work_item_type: str | None = None) -> list[str]:
+        """Справочник «Проект учёта затрат» (project.control) — тип «Задача», не ЗНИ."""
+        field_ref = settings.cost_project_field
+        rest_options: list[str] = []
 
         try:
             response = await self._get_with_api_versions(f"/_apis/wit/fields/{field_ref}")
             if response.status_code == 200:
                 meta = response.json()
                 if isinstance(meta, dict):
-                    collect(meta.get("allowedValues"))
+                    self._collect_picklist_values(rest_options, meta.get("allowedValues"))
+                    self._collect_picklist_values(rest_options, meta.get("listMetadata"))
         except httpx.HTTPError:
             pass
 
-        types_to_try: list[str] = []
-        for candidate in (
-            work_item_type,
-            settings.task_type_name,
-            settings.change_request_type_name,
-            settings.requirement_type_name,
-            settings.error_type_name,
-        ):
-            if candidate and candidate not in types_to_try:
-                types_to_try.append(candidate)
+        types_to_try = self._task_type_names()
+        if work_item_type and work_item_type not in types_to_try:
+            types_to_try.append(work_item_type)
 
         for wit in types_to_try:
             try:
                 meta = await self.get_work_item_type_field(wit, field_ref)
-                collect(meta.get("allowedValues"))
-                collect(meta.get("listMetadata"))
+                self._collect_picklist_values(rest_options, meta)
             except httpx.HTTPError:
                 pass
 
-            if options:
-                break
-
-            try:
-                encoded_type = quote(wit, safe="")
-                response = await self._get_with_api_versions(
-                    f"/{self.project}/_apis/wit/workitemtypes/{encoded_type}/fields"
-                )
-                if response.status_code == 200:
+            for prefix in self._wit_project_prefixes():
+                try:
+                    encoded_type = quote(wit, safe="")
+                    response = await self._get_with_api_versions(
+                        f"{prefix}/_apis/wit/workitemtypes/{encoded_type}/fields"
+                    )
+                    if response.status_code != 200:
+                        continue
                     payload = response.json()
                     for row in as_list(payload.get("value") if isinstance(payload, dict) else payload):
                         if not isinstance(row, dict):
                             continue
                         if row.get("referenceName") == field_ref or row.get("name") == field_ref:
-                            collect(row.get("allowedValues"))
+                            self._collect_picklist_values(rest_options, row)
                             break
-            except httpx.HTTPError:
-                pass
+                except httpx.HTTPError:
+                    pass
 
-            if options:
+            if rest_options and wit == settings.task_type_name:
                 break
 
-        return list(dict.fromkeys(options))
+        fps_options = await self.fetch_cost_projects_from_task_form()
+        wiql_options = await self.query_distinct_cost_projects_wiql()
+
+        return self._merge_cost_project_options(rest_options, fps_options, wiql_options)
+
+    async def collect_cost_projects_from_child_tasks(self, parent_id: int) -> list[str]:
+        """Значения project.control с уже существующих дочерних задач под ЗНИ/требованием."""
+        field_ref = settings.cost_project_field
+        parent = await self.get_work_item(parent_id, expand="Relations")
+        child_ids: list[int] = []
+        for relation in as_relation_list(parent.get("relations")):
+            attributes = as_dict(relation.get("attributes"))
+            if attributes.get("name") != "Child":
+                continue
+            url = relation.get("url", "")
+            try:
+                child_ids.append(int(url.rstrip("/").split("/")[-1]))
+            except ValueError:
+                continue
+        if not child_ids:
+            return []
+
+        batch_fields = [
+            "System.Id",
+            "System.WorkItemType",
+            field_ref,
+        ]
+        pairs: list[tuple[int, str]] = []
+        items = await self.get_work_items_batch(child_ids, fields=batch_fields)
+        for item in items:
+            fields = as_dict(item.get("fields"))
+            if fields.get("System.WorkItemType") != settings.task_type_name:
+                continue
+            value = self.read_cost_project_value(item)
+            if not value:
+                continue
+            item_id = int(item.get("id") or fields.get("System.Id") or 0)
+            pairs.append((item_id, value))
+        pairs.sort(key=lambda row: row[0], reverse=True)
+        values: list[str] = []
+        for _, value in pairs:
+            if value not in values:
+                values.append(value)
+        return values
 
     def read_field_value(self, item: dict[str, Any], field_ref: str) -> str | None:
         fields = as_dict(item.get("fields"))

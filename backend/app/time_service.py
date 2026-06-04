@@ -209,10 +209,7 @@ async def ensure_tracking_task(
         extra_fields["System.IterationPath"] = iteration_path
     elif fields.get("System.IterationPath"):
         extra_fields["System.IterationPath"] = fields["System.IterationPath"]
-    resolved_cost = cost_project or client.read_field_value(
-        parent,
-        settings.cost_project_field,
-    )
+    resolved_cost = cost_project or client.read_cost_project_value(parent)
     if resolved_cost:
         extra_fields[settings.cost_project_field] = resolved_cost
     created = await client.create_child_task(
@@ -253,16 +250,20 @@ async def resolve_cost_project(
     if (explicit or "").strip():
         return explicit.strip()
 
-    options = await client.get_cost_project_options()
+    options = await client.get_cost_project_options(settings.task_type_name)
     user_name = await client.get_authenticated_user_name()
     matched = match_user_cost_project(user_name, options)
     if matched:
         return matched
 
     parent = await client.get_work_item(parent_id)
-    parent_value = client.read_field_value(parent, settings.cost_project_field)
+    parent_value = client.read_cost_project_value(parent)
     if parent_value:
         return parent_value
+
+    configured_default = (settings.cost_project_default or "").strip()
+    if configured_default:
+        return configured_default
 
     if options:
         return options[0]
@@ -272,23 +273,32 @@ async def resolve_cost_project(
 
 async def get_cost_project_options_for_item(client: TfsClient, parent_id: int) -> dict[str, Any]:
     parent = await client.get_work_item(parent_id)
-    parent_value = client.read_field_value(parent, settings.cost_project_field)
-    parent_type = client.normalize_item(parent).get("workItemType")
+    parent_value = client.read_cost_project_value(parent)
 
-    options = await client.get_cost_project_options(
-        parent_type if isinstance(parent_type, str) else None
-    )
+    from_tasks = await client.collect_cost_projects_from_child_tasks(parent_id)
+    options = await client.get_cost_project_options(settings.task_type_name)
+    options = client._merge_cost_project_options(from_tasks, options)
 
-    if parent_value and parent_value not in options:
-        options = [parent_value, *options]
+    if parent_value:
+        options = client._merge_cost_project_options([parent_value], options)
 
-    default_value = parent_value if parent_value in options else None
+    configured_default = (settings.cost_project_default or "").strip()
+    if configured_default:
+        options = client._merge_cost_project_options([configured_default], options)
+
+    # На ЗНИ поля нет — сначала дочерняя «Задача», иначе B2B 2026 из конфига.
+    task_value = from_tasks[0] if from_tasks else None
+    default_value = parent_value or task_value or configured_default or None
+    if default_value:
+        options = client._merge_cost_project_options([default_value], options)
+    if not default_value and len(options) == 1:
+        default_value = options[0]
 
     return {
         "fieldName": settings.cost_project_field,
         "options": options,
         "defaultValue": default_value,
-        "parentValue": parent_value,
+        "parentValue": parent_value or task_value,
     }
 
 

@@ -15,7 +15,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 Nginx в Docker проксирует frontend (`/`) и API (`/api`). Postgres на хосте: `localhost:5433`.
 
-Production-деплой (VPS + nginx на сервере): см. [deploy/DEPLOY.md](deploy/DEPLOY.md).
+Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [deploy/LINUX.md](deploy/LINUX.md) и [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ## Что уже работает
 

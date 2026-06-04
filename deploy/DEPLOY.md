@@ -15,14 +15,21 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 Docker слушает только `127.0.0.1`, снаружи — системный nginx + certbot.
 
-### Автоматически
+### Автоматически (единый скрипт)
+
+Подробная инструкция: **[deploy/LINUX.md](LINUX.md)**
 
 ```bash
 cd /var/www/timesheet
 git pull
-cp .env.production.example .env
-sudo bash deploy/apply-production.sh
+cp .env.production.example .env   # только первый раз
+sudo bash deploy/deploy.sh --bootstrap   # первый раз на VPS
+sudo bash deploy/deploy.sh --issue-ssl   # после настройки DNS
 ```
+
+Обновление: `sudo bash deploy/deploy.sh --pull`
+
+Старый вызов `deploy/apply-production.sh` делает то же самое.
 
 ### Сервисы
 

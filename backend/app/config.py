@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         default="project.control",
         alias="TFS_COST_PROJECT_FIELD",
     )
+    cost_project_default: str = Field(
+        default="B2B 2026",
+        alias="TFS_COST_PROJECT_DEFAULT",
+    )
     remaining_work_field: str = Field(
         default="Microsoft.VSTS.Scheduling.RemainingWork",
         alias="TFS_REMAINING_WORK_FIELD",

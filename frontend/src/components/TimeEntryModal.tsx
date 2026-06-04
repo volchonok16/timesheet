@@ -85,7 +85,7 @@ export default function TimeEntryModal({
     return options.filter((value) => value.toLowerCase().includes(needle))
   }, [costProjects, costProjectFilter])
 
-  const costProjectReady = Boolean(costProjects?.options.length)
+  const costProjectReady = Boolean(costProject.trim()) || Boolean(costProjects?.options.length)
 
   useEffect(() => {
     setEntryDate(date)
@@ -101,9 +101,10 @@ export default function TimeEntryModal({
       .then((payload) => {
         setCostProjects(payload)
         const saved = loadEntryPrefs()?.costProject
+        const fromApi = payload.defaultValue || payload.parentValue || null
         const candidate =
-          (saved && payload.options.includes(saved) ? saved : null) ||
-          (payload.defaultValue && payload.options.includes(payload.defaultValue) ? payload.defaultValue : null) ||
+          (saved && (payload.options.includes(saved) || saved === fromApi) ? saved : null) ||
+          (fromApi && (payload.options.includes(fromApi) || payload.options.length === 0) ? fromApi : null) ||
           ''
         setCostProject(candidate)
       })
@@ -242,7 +243,9 @@ export default function TimeEntryModal({
                   </>
                 ) : (
                   <p className="muted small">
-                    {costProjects === null ? 'Загружаем список из TFS…' : 'Не удалось загрузить список проектов'}
+                    {costProjects === null
+                      ? 'Загружаем список из TFS (тип «Задача»)…'
+                      : 'Список пуст — проверьте TFS_COST_PROJECT_FIELD и дочерние задачи'}
                   </p>
                 )}
               </label>
