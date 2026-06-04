@@ -26,8 +26,29 @@ from app.time_service import (
     touch_recent,
 )
 
+
+def _period_entry_count(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    period_end: date,
+) -> int:
+    return int(
+        db.scalar(
+            select(func.count(TimeEntry.id)).where(
+                TimeEntry.account_key == auth.account_key,
+                TimeEntry.entry_date >= period_start,
+                TimeEntry.entry_date <= period_end,
+                TimeEntry.hours > 0,
+                entry_ownership_clause(auth),
+            )
+        )
+        or 0
+    )
+
 HISTORY_LINE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}):\s*([+-])([\d.,]+)ч(?:\s*[—-]\s*(.*))?$",
+    r"^(\d{4}-\d{2}-\d{2}):\s*(?:([+-]))?([\d.,]+)\s*ч(?:\s*[—-]\s*(.*))?$",
     re.MULTILINE,
 )
 
@@ -101,6 +122,23 @@ def _history_increment_text(fields: dict[str, Any]) -> str:
     return _plain_history_text("\n".join(added))
 
 
+def _history_text_for_parse(fields: dict[str, Any]) -> str:
+    """Инкремент ревизии; если diff пустой — весь newValue (как в Oscar/TFS треде)."""
+    incremental = _history_increment_text(fields)
+    if incremental:
+        return incremental
+    history_raw = fields.get("System.History")
+    if isinstance(history_raw, str):
+        return _plain_history_text(history_raw.strip())
+    if not isinstance(history_raw, dict):
+        return ""
+    full = _plain_history_text(str(history_raw.get("newValue") or ""))
+    if not full:
+        return ""
+    lines = [line for line in full.splitlines() if HISTORY_LINE.search(line.strip())]
+    return "\n".join(lines)
+
+
 def _plain_history_text(value: str) -> str:
     """TFS часто отдаёт System.History как HTML; для парсинга нужна обычная строка."""
     text = html.unescape(value)
@@ -118,12 +156,13 @@ def parse_update_time_slices(
     rev = int(update.get("rev") or update.get("id") or 0)
     revised_date = _parse_revised_date(update.get("revisedDate"))
 
-    history_text = _history_increment_text(fields)
+    history_text = _history_text_for_parse(fields)
 
     slices: list[ParsedTimeSlice] = []
     for index, match in enumerate(HISTORY_LINE.finditer(history_text)):
         entry_date = date.fromisoformat(match.group(1))
-        sign = -1.0 if match.group(2) == "-" else 1.0
+        sign_raw = match.group(2)
+        sign = -1.0 if sign_raw == "-" else 1.0
         hours = round(sign * _parse_hours_token(match.group(3)), 2)
         if abs(hours) < 0.01:
             continue
@@ -464,7 +503,12 @@ def should_run_sync(
     if row is None:
         return True
     age = (datetime.utcnow() - row.synced_at).total_seconds()
-    return age >= settings.tfs_sync_ttl_seconds
+    if age >= settings.tfs_sync_ttl_seconds:
+        return True
+    end = period_end(period_start, view)
+    return _period_entry_count(
+        db, auth, period_start=period_start, period_end=end
+    ) == 0
 
 
 def mark_synced(
@@ -592,7 +636,17 @@ async def sync_time_from_tfs(
     force: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.tracking_stream_sync import try_sync_from_track_stream
+
     end = period_end(period_start, view)
+
+    stream_payload = await try_sync_from_track_stream(
+        db, auth, period_start=period_start, view=view, force=force
+    )
+    if stream_payload is not None and int(stream_payload.get("imported") or 0) > 0:
+        if session_id and auth.tfs_unique_name:
+            update_session(session_id, auth)
+        return stream_payload
 
     if not should_run_sync(db, auth, period_start=period_start, view=view, force=force):
         return {
@@ -718,12 +772,6 @@ async def sync_time_from_tfs(
                     {"id": task_id, "title": title, "kind": "task"}
                 ):
                     return 0, 1
-                if not work_item_owned_by_current_user(
-                    fields,
-                    current_user_tokens=user_tokens,
-                    current_user_strong_tokens=user_strong_tokens,
-                ):
-                    return 0, 1
                 role, activity = parse_tracking_title(title)
                 if not role:
                     role = "—"
@@ -746,6 +794,8 @@ async def sync_time_from_tfs(
                 daily_hours = merge_slices_by_day(
                     slices, period_start=period_start, period_end=end
                 )
+                if not daily_hours:
+                    return 0, 1
                 local_imported = 0
                 local_skipped = 0
                 for entry_date, hours in daily_hours.items():
@@ -810,5 +860,10 @@ async def sync_time_from_tfs(
         "period_start": period_start,
         "period_end": end,
         "cached": False,
-        "source": "tfs",
+        "source": "tfs-grid",
+        "message": (
+            None
+            if imported > 0
+            else "TFS: не найдено ваших списаний за период (проверьте PAT и stream)"
+        ),
     }

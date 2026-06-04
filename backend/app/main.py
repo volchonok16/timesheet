@@ -135,7 +135,9 @@ def auth_status(auth: TfsAuth = Depends(require_tfs_auth)) -> AuthStatusOut:
         authenticated=True,
         tfs_display_name=auth.tfs_display_name,
         tfs_unique_name=auth.tfs_unique_name,
-        tracking_stream_enabled=False,
+        tracking_stream_enabled=bool(
+            settings.tracking_stream_enabled and settings.tracking_stream_base_url
+        ),
     )
 
 

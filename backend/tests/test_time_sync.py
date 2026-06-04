@@ -74,6 +74,19 @@ def test_merge_slices_by_day() -> None:
     assert daily[date(2026, 6, 3)] == 2.0
 
 
+def test_parse_history_without_plus_sign() -> None:
+    update = _update_with_author(
+        rev=2,
+        revised_date="2026-06-04T10:00:00Z",
+        author_display="Петров",
+        author_unique="MAIN\\petrov",
+        fields={"System.History": {"newValue": "2026-06-04: 8ч"}},
+    )
+    slices = parse_update_time_slices(update, tracking_work_item_id=1)
+    assert len(slices) == 1
+    assert slices[0].hours == 8.0
+
+
 def test_parse_history_lines() -> None:
     update = _update_with_author(
         rev=3,
