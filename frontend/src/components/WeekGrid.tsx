@@ -36,17 +36,24 @@ function GroupSection({
   days,
   dayTotals,
   onAddTime,
+  scrollable = false,
 }: {
   title: string
   groups: Timesheet['groups']
   days: Date[]
   dayTotals: Map<string, number>
   onAddTime: (item: WorkItem, date: string, role?: string, activity?: string) => void
+  /** Внутренний скролл тела таблицы (для длинного списка активных задач). */
+  scrollable?: boolean
 }) {
   if (groups.length === 0) return null
 
   return (
-    <section className="timesheet-section">
+    <section
+      className={['timesheet-section', scrollable ? 'timesheet-section--scrollable' : '']
+        .filter(Boolean)
+        .join(' ')}
+    >
       <header className="section-head">
         <h3>{title}</h3>
       </header>
@@ -205,6 +212,7 @@ export default function WeekGrid({ timesheet, periodStart, periodEnd, onAddTime 
         days={days}
         dayTotals={dayTotals}
         onAddTime={onAddTime}
+        scrollable
       />
       <GroupSection
         title="Закрытые задачи"

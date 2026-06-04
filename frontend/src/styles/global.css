@@ -1032,6 +1032,37 @@ h3 {
   padding: 22px 24px;
 }
 
+.timesheet-section--scrollable {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.timesheet-section--scrollable .section-head {
+  flex-shrink: 0;
+}
+
+.timesheet-section--scrollable .grid-scroll {
+  flex: 1;
+  min-height: 120px;
+  margin-top: 12px;
+  max-height: min(52vh, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.timesheet-section--scrollable .timesheet-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.timesheet-section--scrollable .timesheet-grid thead th.sticky-col {
+  z-index: 4;
+}
+
 .day-total {
   min-width: 88px;
   padding: 12px 14px;
