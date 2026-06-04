@@ -204,3 +204,54 @@ cd /var/www/pallink && git pull && …
 ```
 
 Деплой Timesheet **не удаляет** `sites-enabled/pallink.conf` — трогает только `mateplace.conf`.
+
+---
+
+## 502 Bad Gateway на обоих доменах
+
+Nginx работает, но **контейнеры не слушают** те порты, что указаны в `proxy_pass`.
+
+### Диагностика
+
+```bash
+cd /var/www/timesheet
+sudo bash deploy/diagnose.sh
+```
+
+Смотрите строки `DOWN:` и `nginx error.log` (`connect() failed`).
+
+### Частые причины
+
+| Причина | Решение |
+|---------|---------|
+| Timesheet не запущен | `cd /var/www/timesheet && sudo bash deploy/deploy.sh` |
+| В `.env` нет `TIMESHEET_BACKEND_PORT` / `TIMESHEET_FRONTEND_PORT` | скопировать из `.env.production.example` |
+| nginx mateplace → 31080, а Docker на 8000 | перезапустить compose с `.env` или поправить nginx |
+| pallink nginx → 32080, а Roadmap на 8000 | в `pallink.conf` заменить на `8000` и `5173` **или** сменить порты в `.env` pallink и перезапустить Docker |
+| Оба проекта down после `docker compose down` | поднять оба стека |
+
+### Быстрое восстановление mateplace
+
+```bash
+cd /var/www/timesheet
+git pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml down
+sudo bash deploy/deploy.sh
+curl -s http://127.0.0.1:31080/api/health
+```
+
+### Быстрое восстановление pallink (если Roadmap всё ещё на портах 8000/5173)
+
+```bash
+sudo sed -i 's/127.0.0.1:32080/127.0.0.1:8000/g; s/127.0.0.1:32573/127.0.0.1:5173/g' \
+  /etc/nginx/sites-available/pallink.conf
+sudo nginx -t && sudo systemctl reload nginx
+curl -sI http://127.0.0.1:8000/ | head -3
+```
+
+### Проверка в браузере
+
+```bash
+curl -sI https://mateplace.ru | head -5
+curl -sI https://pallink.fun | head -5
+```

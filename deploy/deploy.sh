@@ -333,6 +333,7 @@ wait_for_health() {
     sleep 2
   done
   warn "backend не отвечает на :${BACKEND_PORT} — смотрите: ${COMPOSE[*]} logs backend"
+  warn "При 502 в браузере: sudo bash deploy/diagnose.sh"
 }
 
 print_summary() {
