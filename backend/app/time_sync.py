@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -11,8 +11,15 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import TimeEntry
 from app.tfs_auth import TfsAuth
-from app.tfs_client import TfsClient, wiql_quote
-from app.time_service import parse_tracking_title, period_end, touch_recent
+from app.tfs_client import TfsClient
+from app.time_service import (
+    ROLE_LABELS,
+    list_recent,
+    parse_tracking_title,
+    period_end,
+    timesheet_parent_ids,
+    touch_recent,
+)
 
 HISTORY_LINE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}):\s*([+-])([\d.,]+)ч(?:\s*[—-]\s*(.*))?$",
@@ -114,6 +121,88 @@ def entry_in_period(entry_date: date, *, period_start: date, period_end: date) -
     return period_start <= entry_date <= period_end
 
 
+def is_tracking_child_item(child: dict[str, Any]) -> bool:
+    title = str(child.get("title") or "")
+    if " - " not in title:
+        return False
+    role, _activity = parse_tracking_title(title)
+    return role in ROLE_LABELS
+
+
+def week_delta_from_slices(
+    slices: list[ParsedTimeSlice],
+    *,
+    period_start: date,
+) -> list[float]:
+    """Как в Oscar: 7 чисел — часы по дням недели с period_start (понедельник)."""
+    end = period_start + timedelta(days=6)
+    daily: dict[date, float] = {}
+    for slice_ in slices:
+        if period_start <= slice_.entry_date <= end:
+            daily[slice_.entry_date] = round(daily.get(slice_.entry_date, 0) + slice_.hours, 2)
+    return [round(daily.get(period_start + timedelta(days=i), 0), 2) for i in range(7)]
+
+
+def aggregate_slices_for_task(
+    updates: list[dict[str, Any]],
+    *,
+    tracking_work_item_id: int,
+) -> list[ParsedTimeSlice]:
+    merged: list[ParsedTimeSlice] = []
+    for update in updates:
+        merged.extend(
+            parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
+        )
+    return merged
+
+
+async def collect_tracking_task_ids(
+    client: TfsClient,
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    view: str,
+) -> list[int]:
+    """
+    Как Oscar stream_get-time-tracking-results: недавние родители → дочерние «Роль - Активность».
+    Плюс WIQL по задачам с Completed Work (с запасом по дате изменения).
+    """
+    seen: set[int] = set()
+    ordered: list[int] = []
+
+    def add(task_id: int) -> None:
+        if task_id not in seen:
+            seen.add(task_id)
+            ordered.append(task_id)
+
+    parent_ids: list[int] = []
+    for row in list_recent(db, auth, limit=40):
+        parent_ids.append(row.id)
+    parent_ids.extend(
+        timesheet_parent_ids(db, auth, period_start=period_start, view=view, recent_limit=40)
+    )
+    parent_seen: set[int] = set()
+    for parent_id in parent_ids:
+        if parent_id in parent_seen:
+            continue
+        parent_seen.add(parent_id)
+        for child in await client.get_child_tasks(parent_id):
+            if not is_tracking_child_item(child):
+                continue
+            add(int(child["id"]))
+
+    lookback = period_start - timedelta(days=90)
+    wiql_ids = await client.find_task_ids_with_completed_work(
+        changed_since=lookback,
+        limit=settings.tfs_sync_max_tasks,
+    )
+    for task_id in wiql_ids:
+        add(task_id)
+
+    return ordered[: settings.tfs_sync_max_tasks]
+
+
 def sync_key_exists(db: Session, auth: TfsAuth, sync_key: str) -> bool:
     existing = db.scalar(
         select(TimeEntry.id).where(
@@ -138,9 +227,8 @@ async def sync_time_from_tfs(
     tasks_scanned = 0
 
     try:
-        task_ids = await client.find_task_ids_with_completed_work(
-            changed_since=period_start,
-            limit=settings.tfs_sync_max_tasks,
+        task_ids = await collect_tracking_task_ids(
+            client, db, auth, period_start=period_start, view=view
         )
         local_tracking_ids = db.scalars(
             select(TimeEntry.tracking_work_item_id)
@@ -152,16 +240,9 @@ async def sync_time_from_tfs(
             )
             .distinct()
         ).all()
-        merged_ids: list[int] = []
-        seen_ids: set[int] = set()
-        for raw_id in [*task_ids, *local_tracking_ids]:
-            if raw_id is None:
-                continue
-            task_id = int(raw_id)
-            if task_id not in seen_ids:
-                seen_ids.add(task_id)
-                merged_ids.append(task_id)
-        task_ids = merged_ids
+        for raw_id in local_tracking_ids:
+            if raw_id is not None and int(raw_id) not in task_ids:
+                task_ids.append(int(raw_id))
 
         user_hint = (await client.get_authenticated_user_name() or auth.username or "").casefold()
 
@@ -193,37 +274,32 @@ async def sync_time_from_tfs(
             parent_item = await client.get_work_item(parent_id)
             parent_norm = client.normalize_item(parent_item)
 
-            for update in updates:
-                revised = _parse_revised_date(update.get("revisedDate"))
-                if revised < period_start or revised > end:
+            # Все ревизии (как Oscar): даты берём из истории «YYYY-MM-DD: +Nч», не из revisedDate.
+            for slice_ in aggregate_slices_for_task(
+                updates, tracking_work_item_id=task_id
+            ):
+                if not entry_in_period(slice_.entry_date, period_start=period_start, period_end=end):
+                    continue
+                if sync_key_exists(db, auth, slice_.sync_key):
+                    skipped += 1
                     continue
 
-                for slice_ in parse_update_time_slices(
-                    update,
-                    tracking_work_item_id=task_id,
-                ):
-                    if not entry_in_period(slice_.entry_date, period_start=period_start, period_end=end):
-                        continue
-                    if sync_key_exists(db, auth, slice_.sync_key):
-                        skipped += 1
-                        continue
-
-                    db.add(
-                        TimeEntry(
-                            account_key=auth.account_key,
-                            parent_work_item_id=parent_id,
-                            tracking_work_item_id=task_id,
-                            role=role,
-                            activity=activity,
-                            entry_date=slice_.entry_date,
-                            hours=slice_.hours,
-                            comment=slice_.comment,
-                            cost_project=client.read_cost_project_value(task_item)
-                            or client.read_cost_project_value(parent_item),
-                            tfs_sync_key=slice_.sync_key,
-                        )
+                db.add(
+                    TimeEntry(
+                        account_key=auth.account_key,
+                        parent_work_item_id=parent_id,
+                        tracking_work_item_id=task_id,
+                        role=role,
+                        activity=activity,
+                        entry_date=slice_.entry_date,
+                        hours=slice_.hours,
+                        comment=slice_.comment,
+                        cost_project=client.read_cost_project_value(task_item)
+                        or client.read_cost_project_value(parent_item),
+                        tfs_sync_key=slice_.sync_key,
                     )
-                    imported += 1
+                )
+                imported += 1
 
             touch_recent(db, auth, parent_norm)
 
