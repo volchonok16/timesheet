@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
-from app.http_auth import build_http_auth
+from app.http_auth import build_http_auth, pat_http_auth_candidates
 from app.tfs_auth import TfsAuth
 
 
@@ -164,13 +164,33 @@ class TfsTsapiClient:
     async def get_work_item_deltas(
         self, work_item_id: int, *, page: int = 1, take: int = 200
     ) -> list[TsapiDeltaRow]:
-        response = await self.client.get(
-            "/WorkItemFormTab/GetListDeltaByWorkitemIDMod",
-            params={"WI_ID": work_item_id, "page": page, "take": take},
+        path = "/WorkItemFormTab/GetListDeltaByWorkitemIDMod"
+        params = {"WI_ID": work_item_id, "page": page, "take": take}
+        errors: list[str] = []
+        auth_pairs = pat_http_auth_candidates(self.auth) or [("", "")]
+        for user, pat in auth_pairs:
+            label = user or "(пустой логин)"
+            try:
+                if self.auth.pat:
+                    async with httpx.AsyncClient(
+                        base_url=self.base_url,
+                        auth=(user, pat),
+                        headers=self.client.headers,
+                        timeout=settings.tfs_timeout_seconds,
+                        verify=settings.tfs_verify_tls,
+                        follow_redirects=True,
+                    ) as probe:
+                        response = await probe.get(path, params=params)
+                else:
+                    response = await self.client.get(path, params=params)
+                response.raise_for_status()
+                payload = response.json()
+                return parse_list_delta_payload(payload, work_item_id=work_item_id)
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+        raise httpx.HTTPError(
+            "tsapi ListDelta: " + "; ".join(errors[:4])
         )
-        response.raise_for_status()
-        payload = response.json()
-        return parse_list_delta_payload(payload, work_item_id=work_item_id)
 
     async def save_delta(
         self,

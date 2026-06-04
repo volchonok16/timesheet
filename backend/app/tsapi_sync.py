@@ -70,10 +70,13 @@ async def _collect_pending_tsapi_entries(
     auth: TfsAuth,
     period_start: date,
     period_end: date,
-) -> tuple[list[PendingTsapiEntry], int, int]:
+) -> tuple[list[PendingTsapiEntry], int, int, dict[str, Any]]:
     pending: list[PendingTsapiEntry] = []
     tasks_scanned = 0
     skipped = 0
+    tsapi_errors: list[str] = []
+    deltas_in_period = 0
+    deltas_user_mismatch = 0
 
     for target in targets:
         title = titles_by_id.get(target.task_id, "")
@@ -83,16 +86,20 @@ async def _collect_pending_tsapi_entries(
         tasks_scanned += 1
         try:
             deltas = await tsapi.get_work_item_deltas(target.task_id)
-        except Exception:
+        except Exception as exc:
             skipped += 1
+            if len(tsapi_errors) < 5:
+                tsapi_errors.append(f"#{target.task_id}: {exc}")
             continue
 
         role, activity = _title_for_target(titles_by_id, target.task_id)
         for row in deltas:
-            if not delta_user_matches_auth(row.user_id, auth):
-                continue
             if row.period_date < period_start or row.period_date > period_end:
                 continue
+            deltas_in_period += 1
+            # Задачи уже отфильтрованы WIQL «мои»; если AD_UserID не совпал по формату — всё равно берём период.
+            if not delta_user_matches_auth(row.user_id, auth):
+                deltas_user_mismatch += 1
             pending.append(
                 PendingTsapiEntry(
                     parent_id=target.parent_id,
@@ -103,7 +110,12 @@ async def _collect_pending_tsapi_entries(
                 )
             )
 
-    return pending, tasks_scanned, skipped
+    stats = {
+        "deltas_in_period": deltas_in_period,
+        "deltas_user_mismatch": deltas_user_mismatch,
+        "tsapi_errors": tsapi_errors,
+    }
+    return pending, tasks_scanned, skipped, stats
 
 
 def _clear_sync_state(
@@ -207,7 +219,7 @@ async def sync_from_tsapi(
 
     tsapi = TfsTsapiClient(auth)
     try:
-        pending, tasks_scanned, skipped = await _collect_pending_tsapi_entries(
+        pending, tasks_scanned, skipped, scan_stats = await _collect_pending_tsapi_entries(
             targets=targets,
             titles_by_id=titles_by_id,
             tsapi=tsapi,
@@ -278,23 +290,36 @@ async def sync_from_tsapi(
         _clear_sync_state(db, auth, period_start=period_start, view=view)
     db.commit()
 
+    tsapi_errors = scan_stats.get("tsapi_errors") or []
+    deltas_in_period = int(scan_stats.get("deltas_in_period") or 0)
+    message: str | None = None
+    if imported > 0:
+        message = None
+    elif tsapi_errors and tasks_scanned > 0 and deltas_in_period == 0:
+        message = (
+            "TFS tsapi: не удалось прочитать «Время» (проверьте PAT и логин T2RU\\user). "
+            f"Пример: {tsapi_errors[0]}"
+        )
+    elif deltas_in_period == 0:
+        message = (
+            "TFS «Время»: за эту неделю нет строк ListDelta (PeriodDate) на ваших задачах."
+            if not force
+            else "TFS «Время»: ListDelta за неделю пустой. Старые строки в табеле не удалены."
+        )
+    else:
+        message = "TFS «Время»: строки найдены, но все уже есть в табеле (sync key)."
+
     return {
         "imported": imported,
         "skipped": skipped,
         "tasks_scanned": tasks_scanned,
         "purged": purged,
         "removed_dupes": removed_dupes,
+        "deltas_in_period": deltas_in_period,
         "period_start": period_start,
         "period_end": end,
         "cached": False,
         "source": "tsapi",
-        "message": (
-            None
-            if imported > 0
-            else (
-                "TFS «Время»: нет новых строк ListDelta за неделю."
-                if not force
-                else "TFS «Время»: ListDelta за неделю пустой после пересборки."
-            )
-        ),
+        "message": message,
+        "tsapi_errors": tsapi_errors[:5] if tsapi_errors else None,
     }

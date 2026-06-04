@@ -31,6 +31,15 @@ export type TimesheetGroup = {
   totalHours: number
 }
 
+export type TimesheetSyncResult = {
+  imported?: number
+  skipped?: number
+  tasksScanned?: number
+  cached?: boolean
+  message?: string
+  tsapiErrors?: string[] | null
+}
+
 export type Timesheet = {
   periodStart: string
   periodEnd: string

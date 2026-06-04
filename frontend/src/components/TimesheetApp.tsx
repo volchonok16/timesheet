@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch, clearSessionId, getJson, readApiError } from '../api'
-import type { Activity, Calendar, Role, StatsSummary, Timesheet, WorkItem } from '../types'
+import type {
+  Activity,
+  Calendar,
+  Role,
+  StatsSummary,
+  Timesheet,
+  TimesheetSyncResult,
+  WorkItem,
+} from '../types'
 import {
   addDays,
   isCalendarView,
@@ -158,17 +166,15 @@ export default function TimesheetApp({ onLogout }: Props) {
         if (!response.ok) {
           throw new Error(await response.text())
         }
-        const result = (await response.json()) as {
-          imported?: number
-          cached?: boolean
-          message?: string
-          source?: string
-        }
+        const result = (await response.json()) as TimesheetSyncResult
         sessionStorage.setItem(syncStorageKey(start, syncView), String(Date.now()))
         if ((result.imported ?? 0) === 0 && !result.cached) {
-          setError(
-            result.message ?? 'Синхронизация завершена, но часов за период не найдено.',
-          )
+          const detail =
+            result.message ??
+            (result.tsapiErrors?.[0]
+              ? `TFS tsapi: ${result.tsapiErrors[0]}`
+              : 'Синхронизация завершена, но часов за период не найдено.')
+          setError(detail)
         }
         if (!result.cached && ((result.imported ?? 0) > 0 || force)) {
           void loadStats()

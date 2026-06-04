@@ -56,9 +56,34 @@ def expand_login_usernames(raw_user: str, domain: str | None = None) -> list[str
     return result
 
 
+def pat_http_auth_candidates(auth: TfsAuth) -> list[tuple[str, str]]:
+    """On-prem TFS tsapi часто требует Basic(user, PAT), а не (:, PAT)."""
+    if not auth.pat:
+        return []
+    pat = auth.pat.strip()
+    seen: set[tuple[str, str]] = set()
+    candidates: list[tuple[str, str]] = []
+
+    def push(user: str) -> None:
+        key = (user, pat)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(key)
+
+    push("")
+    for raw in (
+        auth.tfs_unique_name,
+        auth.username,
+        *expand_login_usernames((auth.username or "").strip(), auth.domain),
+    ):
+        if raw and str(raw).strip():
+            push(str(raw).strip())
+    return candidates
+
+
 def build_http_auth(auth: TfsAuth, *, use_ntlm: bool = True) -> Any | None:
     if auth.pat:
-        return ("", auth.pat)
+        return pat_http_auth_candidates(auth)[0]
     if auth.username and auth.password:
         username = auth.username.strip()
         if use_ntlm and not is_email_login(username):

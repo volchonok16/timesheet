@@ -174,12 +174,15 @@ class TimesheetSyncOut(ApiModel):
     skipped: int
     tasks_scanned: int
     purged: int = 0
+    removed_dupes: int = 0
+    deltas_in_period: int = 0
     period_start: date
     period_end: date
     cached: bool = False
     source: str | None = None
     message: str | None = None
     stream_ok: bool | None = None
+    tsapi_errors: list[str] | None = None
 
 
 class RecentEntryOut(ApiModel):

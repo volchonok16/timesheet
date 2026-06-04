@@ -623,6 +623,13 @@ async def collect_tracking_targets(
         if parent_id is not None:
             add(task_id, parent_id)
 
+    for task_id in await client.find_task_ids_with_completed_work(
+        changed_since=lookback, limit=settings.tfs_sync_max_tasks
+    ):
+        parent_id = await client.get_parent_work_item_id(task_id)
+        if parent_id is not None:
+            add(task_id, parent_id)
+
     end = period_end(period_start, view)
     local_rows = db.execute(
         select(TimeEntry.tracking_work_item_id, TimeEntry.parent_work_item_id).where(
