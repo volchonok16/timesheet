@@ -27,20 +27,12 @@
 | Проект | Каталог | Frontend (host) | Backend (host) | Домены |
 |--------|---------|-----------------|----------------|--------|
 | **TFS Timesheet** | `/var/www/timesheet` | **31573** | **31080** | mateplace.ru, api.mateplace.ru |
-| **TFS Roadmap** (pallink) | `/var/www/pallink` (или как у вас) | **32573** | **32080** | pallink.fun |
+| **TFS Roadmap** (pallink) | `/var/www/pallink` (или как у вас) | **5173** | **8000** | pallink.fun |
 
 В `.env` каждого проекта свои `TIMESHEET_*_PORT` / аналоги.  
 Timesheet **не трогает** контейнеры pallink — только свой `docker compose`.
 
-Пример для Roadmap в `.env` pallink:
-
-```env
-TIMESHEET_HTTP_PORT=32080
-TIMESHEET_BACKEND_PORT=32080
-TIMESHEET_FRONTEND_PORT=32573
-```
-
-(имена переменных могут совпадать, если Roadmap — форк того же шаблона.)
+Roadmap может оставаться на стандартных **8000/5173** — Timesheet уже на **31080/31573**, конфликта нет.
 
 ---
 
@@ -240,13 +232,21 @@ sudo bash deploy/deploy.sh
 curl -s http://127.0.0.1:31080/api/health
 ```
 
-### Быстрое восстановление pallink (если Roadmap всё ещё на портах 8000/5173)
+### Быстрое восстановление pallink (502 → Connection refused на :32573)
+
+Nginx смотрит не туда. Вернуть **8000** и **5173**:
 
 ```bash
 sudo sed -i 's/127.0.0.1:32080/127.0.0.1:8000/g; s/127.0.0.1:32573/127.0.0.1:5173/g' \
   /etc/nginx/sites-available/pallink.conf
 sudo nginx -t && sudo systemctl reload nginx
-curl -sI http://127.0.0.1:8000/ | head -3
+
+cd /var/www/pallink   # папка Roadmap
+docker compose ps
+docker compose up -d
+
+curl -sI http://127.0.0.1:5173/ | head -3
+curl -s http://127.0.0.1:8000/api/health 2>/dev/null || true
 ```
 
 ### Проверка в браузере
