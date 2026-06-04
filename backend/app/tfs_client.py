@@ -9,7 +9,7 @@ import httpx
 from app.config import settings
 from app.http_auth import build_http_auth
 from app.json_utils import as_dict, as_list, as_relation_list, as_work_item_list
-from app.tfs_auth import TfsAuth
+from app.tfs_auth import TfsAuth, TfsIdentity
 
 
 def wiql_escape(value: str) -> str:
@@ -91,7 +91,7 @@ class TfsClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def get_authenticated_user_name(self) -> str | None:
+    async def get_connection_authenticated_user(self) -> dict[str, Any] | None:
         response = await self.client.get(
             "/_apis/connectionData",
             params={"connectOptions": "includeServices", "lastChangeId": "-1", "api-version": "5.0"},
@@ -102,12 +102,30 @@ class TfsClient:
         if not isinstance(payload, dict):
             return None
         user = as_dict(payload.get("authenticatedUser"))
-        return (
-            identity_display(user)
-            or user.get("providerDisplayName")
-            or user.get("customDisplayName")
-            or identity_display(user.get("identityRef"))
+        return user or None
+
+    async def get_authenticated_user_identity(self) -> TfsIdentity | None:
+        """Кто владелец PAT / сессии — из TFS connectionData."""
+        user = await self.get_connection_authenticated_user()
+        if not user:
+            return None
+        id_ref = as_dict(user.get("identityRef"))
+        return TfsIdentity(
+            display_name=(
+                identity_display(user)
+                or identity_display(id_ref)
+                or user.get("providerDisplayName")
+                or user.get("customDisplayName")
+            ),
+            unique_name=user.get("uniqueName") or id_ref.get("uniqueName"),
+            descriptor=user.get("descriptor") or id_ref.get("descriptor"),
+            identity_id=str(user.get("id") or id_ref.get("id") or "") or None,
+            email=user.get("mailAddress") or user.get("emailAddress") or id_ref.get("uniqueName"),
         )
+
+    async def get_authenticated_user_name(self) -> str | None:
+        identity = await self.get_authenticated_user_identity()
+        return identity.display_name if identity else None
 
     def work_item_url(self, item_id: int) -> str:
         return f"{self.base_url}/{self.project}/_workitems/edit/{item_id}"

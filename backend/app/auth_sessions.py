@@ -12,6 +12,14 @@ def _serialize(auth: TfsAuth) -> str:
 
 def _deserialize(raw: str) -> TfsAuth:
     data = json.loads(raw)
+    for key in (
+        "tfs_display_name",
+        "tfs_unique_name",
+        "tfs_descriptor",
+        "tfs_identity_id",
+        "tfs_email",
+    ):
+        data.setdefault(key, None)
     return TfsAuth(**data)
 
 

@@ -9,7 +9,7 @@ from app.auth_sessions import create_session
 from app.config import settings
 from app.http_auth import auth_attempts
 from app.schemas import AuthLoginOut
-from app.tfs_auth import TfsAuth
+from app.tfs_auth import TfsAuth, attach_tfs_identity
 from app.tfs_client import TfsClient, wiql_quote
 
 
@@ -88,6 +88,13 @@ async def login_with_auth(auth: TfsAuth) -> AuthLoginOut:
         raise HTTPException(status_code=400, detail="Укажите логин и пароль, PAT или Cookie.")
 
     resolved, _ = await resolve_working_auth(auth)
+    client = TfsClient(resolved)
+    try:
+        identity = await client.get_authenticated_user_identity()
+        if identity:
+            resolved = attach_tfs_identity(resolved, identity)
+    finally:
+        await client.close()
     session_id = create_session(resolved)
     return AuthLoginOut(
         session_id=session_id,

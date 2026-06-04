@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import AccountSyncState, TimeEntry
-from app.tfs_auth import TfsAuth
+from app.tfs_auth import TfsAuth, attach_tfs_identity
 from app.tfs_client import TfsClient
 from app.time_service import (
     ROLE_LABELS,
@@ -150,54 +150,53 @@ def _identity_tokens_from_blob(blob: Any) -> set[str]:
     return tokens
 
 
+def _tokens_match(author_tokens: set[str], current_user_tokens: set[str]) -> bool:
+    for author in author_tokens:
+        for current in current_user_tokens:
+            if not author or not current:
+                continue
+            if author == current or author in current or current in author:
+                return True
+    return False
+
+
 def update_revised_by_current_user(
     update: dict[str, Any],
     *,
-    display_name: str | None,
-    login: str | None,
+    current_user_tokens: set[str],
 ) -> bool:
-    """Только ревизии, которые внёс текущий пользователь (не чужие списания на той же задаче)."""
-    if not display_name and not login:
-        return True
+    """Только ревизии текущего пользователя (сопоставление с PAT/connectionData)."""
+    if not current_user_tokens:
+        return False
     author_tokens = _identity_tokens_from_blob(update.get("revisedBy"))
     if not author_tokens:
         return False
-    hints: list[str] = []
-    if display_name:
-        dn = display_name.casefold().strip()
-        hints.append(dn)
-        parts = dn.split()
-        if parts:
-            hints.append(parts[0])
-    if login:
-        lg = login.casefold().strip()
-        hints.append(lg)
-        if "\\" in lg:
-            hints.append(lg.split("\\")[-1])
-        if "@" in lg:
-            hints.append(lg.split("@")[0])
-    for token in author_tokens:
-        for hint in hints:
-            if not hint:
-                continue
-            if hint in token or token in hint:
-                return True
-    return False
+    return _tokens_match(author_tokens, current_user_tokens)
+
+
+async def resolve_current_user_tokens(client: TfsClient, auth: TfsAuth) -> set[str]:
+    """Токены идентичности: из сессии (после входа по PAT) или connectionData."""
+    tokens = auth.identity_match_tokens()
+    if tokens:
+        return tokens
+    identity = await client.get_authenticated_user_identity()
+    if identity:
+        return identity.match_tokens()
+    return set()
 
 
 def filter_updates_for_sync(
     updates: list[dict[str, Any]],
     *,
     period_start: date,
-    display_name: str | None = None,
-    login: str | None = None,
+    current_user_tokens: set[str],
 ) -> list[dict[str, Any]]:
     """Релевантные ревизии периода, только от текущего пользователя."""
     cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
     filtered: list[dict[str, Any]] = []
     for update in updates:
         if not update_revised_by_current_user(
-            update, display_name=display_name, login=login
+            update, current_user_tokens=current_user_tokens
         ):
             continue
         revised = _parse_revised_date(update.get("revisedDate"))
@@ -214,15 +213,13 @@ def aggregate_slices_for_task(
     *,
     tracking_work_item_id: int,
     period_start: date,
-    display_name: str | None = None,
-    login: str | None = None,
+    current_user_tokens: set[str],
 ) -> list[ParsedTimeSlice]:
     merged: list[ParsedTimeSlice] = []
     for update in filter_updates_for_sync(
         updates,
         period_start=period_start,
-        display_name=display_name,
-        login=login,
+        current_user_tokens=current_user_tokens,
     ):
         merged.extend(
             parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
@@ -415,8 +412,12 @@ async def sync_time_from_tfs(
     parents_touched: set[int] = set()
 
     try:
-        user_display = await client.get_authenticated_user_name()
-        user_login = auth.username
+        user_tokens = await resolve_current_user_tokens(client, auth)
+        if user_tokens and not auth.tfs_unique_name:
+            identity = await client.get_authenticated_user_identity()
+            if identity:
+                auth = attach_tfs_identity(auth, identity)
+                user_tokens = auth.identity_match_tokens()
         purged = purge_imported_tfs_entries(
             db, auth, period_start=period_start, period_end=end
         )
@@ -517,8 +518,7 @@ async def sync_time_from_tfs(
                     updates,
                     tracking_work_item_id=task_id,
                     period_start=period_start,
-                    display_name=user_display,
-                    login=user_login,
+                    current_user_tokens=user_tokens,
                 ):
                     if not entry_in_period(
                         slice_.entry_date, period_start=period_start, period_end=end
