@@ -8,7 +8,7 @@ services:
   backend:
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${BACKEND_WORKERS:-2}"
     ports:
-      - "127.0.0.1:18080:8000"
+      - "127.0.0.1:${TIMESHEET_BACKEND_PORT:-31080}:8000"
     environment:
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://mateplace.ru}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-https://api.mateplace.ru}
@@ -20,4 +20,4 @@ services:
       args:
         VITE_API_URL: ${VITE_API_URL:-https://api.mateplace.ru}
     ports:
-      - "127.0.0.1:15173:5173"
+      - "127.0.0.1:${TIMESHEET_FRONTEND_PORT:-31573}:5173"

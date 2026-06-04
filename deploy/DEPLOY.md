@@ -7,7 +7,7 @@ cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Откройте **http://localhost:18080**.
+Откройте **http://localhost:30080**.
 
 ---
 
@@ -35,8 +35,8 @@ sudo bash deploy/deploy.sh --issue-ssl   # после настройки DNS
 
 | Сервис   | Домен                    | Docker (localhost) |
 |----------|--------------------------|--------------------|
-| Frontend | https://mateplace.ru     | `127.0.0.1:15173`  |
-| API      | https://api.mateplace.ru | `127.0.0.1:18080`  |
+| Frontend | https://mateplace.ru     | `127.0.0.1:31573`  |
+| API      | https://api.mateplace.ru | `127.0.0.1:31080`  |
 | Postgres | только внутри Docker     | порт не пробрасывается |
 
 ### DNS
@@ -67,7 +67,7 @@ sudo certbot certonly --webroot -w /var/www/certbot \
 
 | Файл | Назначение |
 |------|------------|
-| `deploy/nginx/docker.conf` | nginx в Docker (локальный `:18080`) |
+| `deploy/nginx/docker.conf` | nginx в Docker (локальный `:30080`) |
 | `deploy/nginx/mateplace.conf` | Production HTTPS |
 | `deploy/nginx/mateplace.certbot-bootstrap.conf` | HTTP до выпуска SSL |
 | `deploy/nginx/snippets/ssl-mateplace.conf` | Пути к Let's Encrypt |
@@ -76,8 +76,8 @@ sudo certbot certonly --webroot -w /var/www/certbot \
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-curl -s http://127.0.0.1:18080/api/health
-curl -sI -H 'Host: localhost' http://127.0.0.1:15173/
+curl -s http://127.0.0.1:31080/api/health
+curl -sI -H 'Host: localhost' http://127.0.0.1:31573/
 ```
 
 После SSL: https://mateplace.ru и https://api.mateplace.ru/api/health

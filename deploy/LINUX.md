@@ -46,7 +46,7 @@ sudo bash deploy/deploy.sh --bootstrap
 Проверка без SSL:
 
 ```bash
-curl -s http://127.0.0.1:18080/api/health
+curl -s http://127.0.0.1:31080/api/health
 ```
 
 ---
@@ -135,8 +135,8 @@ sudo certbot renew --dry-run
 Интернет :443/:80
     ↓
 nginx (системный)
-    ├─ https://domain/      → 127.0.0.1:15173 (frontend, Vite в prod compose)
-    └─ https://api.domain/  → 127.0.0.1:18080 (FastAPI)
+    ├─ https://domain/      → 127.0.0.1:31573 (frontend)
+    └─ https://api.domain/  → 127.0.0.1:31080 (FastAPI)
                               ↓
                          postgres (только Docker-сеть)
 ```
@@ -167,8 +167,8 @@ sudo apt-get update
 cd /var/www/timesheet
 docker compose -f docker-compose.yml -f docker-compose.prod.yml down
 docker compose -p prog -f docker-compose.yml -f docker-compose.prod.yml down 2>/dev/null || true
-docker ps --format '{{.Names}} {{.Ports}}' | grep -E '18080|15173|8000|5173'
-sudo ss -tlnp | grep -E ':18080|:15173|:8000|:5173'
+docker ps --format '{{.Names}} {{.Ports}}' | grep -E '31080|31573|30080|5173|8000'
+sudo ss -tlnp | grep -E ':31080|:31573|:30080|:5173'
 # остановить лишний контейнер:
 docker stop <ID_из_docker_ps>
 sudo bash deploy/deploy.sh

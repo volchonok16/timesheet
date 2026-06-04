@@ -6,8 +6,8 @@ function resolveApiBase(): string {
   if (typeof window === 'undefined') return ''
   const { hostname, protocol, port } = window.location
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    if (port === '15173') return `${protocol}//${hostname}:18080`
-    // За nginx (18080, 8080, 80 и т.д.) — относительные пути /api
+    if (port === '31573') return `${protocol}//${hostname}:31080`
+    // За nginx (30080, 80 и т.д.) — относительные пути /api
     return ''
   }
   // Production: отдельный API-домен задаётся через VITE_API_URL

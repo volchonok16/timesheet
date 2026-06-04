@@ -39,8 +39,8 @@ class Settings(BaseSettings):
         alias="TFS_REMAINING_WORK_FIELD",
     )
 
-    app_public_url: str = Field(default="http://localhost:5173", alias="APP_PUBLIC_URL")
-    api_public_url: str = Field(default="http://localhost:8000", alias="API_PUBLIC_URL")
+    app_public_url: str = Field(default="http://localhost:30080", alias="APP_PUBLIC_URL")
+    api_public_url: str = Field(default="http://localhost:30080", alias="API_PUBLIC_URL")
     cors_allow_origins: str = Field(default="", alias="CORS_ALLOW_ORIGINS")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
 
@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         origins = [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
+            "http://localhost:30080",
+            "http://127.0.0.1:30080",
             "https://tfs.t2.ru",
         ]
         app_url = self.app_public_url.rstrip("/")

@@ -19,6 +19,8 @@ cd "$ROOT"
 
 DOMAIN="${TIMESHEET_DOMAIN:-mateplace.ru}"
 API_DOMAIN="${TIMESHEET_API_DOMAIN:-api.mateplace.ru}"
+BACKEND_PORT="${TIMESHEET_BACKEND_PORT:-31080}"
+FRONTEND_PORT="${TIMESHEET_FRONTEND_PORT:-31573}"
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 CERTBOT_WEBROOT="/var/www/certbot"
@@ -61,7 +63,7 @@ need_root_for_nginx() {
   fi
 }
 
-load_domains_from_env() {
+load_env_config() {
   if [[ -f .env ]]; then
     # shellcheck disable=SC1091
     set -a
@@ -69,6 +71,8 @@ load_domains_from_env() {
     set +a
     DOMAIN="${TIMESHEET_DOMAIN:-$DOMAIN}"
     API_DOMAIN="${TIMESHEET_API_DOMAIN:-$API_DOMAIN}"
+    BACKEND_PORT="${TIMESHEET_BACKEND_PORT:-$BACKEND_PORT}"
+    FRONTEND_PORT="${TIMESHEET_FRONTEND_PORT:-$FRONTEND_PORT}"
     CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
   fi
 }
@@ -76,6 +80,15 @@ load_domains_from_env() {
 substitute_domain() {
   sed -e "s/mateplace.ru/${DOMAIN}/g" \
       -e "s/api.mateplace.ru/${API_DOMAIN}/g"
+}
+
+substitute_ports() {
+  sed -e "s/127.0.0.1:31080/127.0.0.1:${BACKEND_PORT}/g" \
+      -e "s/127.0.0.1:31573/127.0.0.1:${FRONTEND_PORT}/g" \
+      -e "s/127.0.0.1:18080/127.0.0.1:${BACKEND_PORT}/g" \
+      -e "s/127.0.0.1:15173/127.0.0.1:${FRONTEND_PORT}/g" \
+      -e "s/127.0.0.1:8000/127.0.0.1:${BACKEND_PORT}/g" \
+      -e "s/127.0.0.1:5173/127.0.0.1:${FRONTEND_PORT}/g"
 }
 
 ensure_env_file() {
@@ -188,7 +201,7 @@ git_pull_if_requested() {
 }
 
 stop_compose_port_conflicts() {
-  # Старый стек или прежние порты :8000 / :5173 могут мешать :18080 / :15173
+  # Освобождаем текущие и старые порты (Vite 5173, прежние 8000/18080/15173…)
   local project
   for project in timesheet prog; do
     if docker compose -p "$project" -f docker-compose.yml -f docker-compose.prod.yml ps -q 2>/dev/null | grep -q .; then
@@ -197,7 +210,7 @@ stop_compose_port_conflicts() {
     fi
   done
   local id port
-  for port in 18080 15173 8000 5173; do
+  for port in "$BACKEND_PORT" "$FRONTEND_PORT" 30080 30433 31080 31573 18080 15173 15433 8000 5173 8080 5433; do
     for id in $(docker ps -q --filter "publish=127.0.0.1:${port}" 2>/dev/null); do
       warn "Порт ${port} занят контейнером ${id} — останавливаем"
       docker stop "$id" 2>/dev/null || true
@@ -207,12 +220,12 @@ stop_compose_port_conflicts() {
 
 deploy_compose() {
   ensure_env_file
-  load_domains_from_env
+  load_env_config
   patch_env_domains
-  load_domains_from_env
+  load_env_config
 
   log "Проект: $ROOT"
-  log "Домен: $DOMAIN | API: $API_DOMAIN"
+  log "Домен: $DOMAIN | API: $API_DOMAIN | backend :${BACKEND_PORT} | frontend :${FRONTEND_PORT}"
 
   ensure_docker_running
 
@@ -226,6 +239,7 @@ deploy_compose() {
 
 configure_nginx() {
   need_root_for_nginx
+  load_env_config
   log "Nginx…"
 
   mkdir -p "$CERTBOT_WEBROOT"
@@ -236,10 +250,10 @@ configure_nginx() {
 
   if [[ -f "$CERT_DIR/fullchain.pem" && -f "$CERT_DIR/privkey.pem" ]]; then
     log "SSL найден — HTTPS."
-    substitute_domain < "$ROOT/deploy/nginx/mateplace.conf" > /etc/nginx/sites-available/mateplace.conf
+    substitute_domain < "$ROOT/deploy/nginx/mateplace.conf" | substitute_ports > /etc/nginx/sites-available/mateplace.conf
   else
     log "SSL нет — HTTP для certbot."
-    substitute_domain < "$ROOT/deploy/nginx/mateplace.certbot-bootstrap.conf" > /etc/nginx/sites-available/mateplace.conf
+    substitute_domain < "$ROOT/deploy/nginx/mateplace.certbot-bootstrap.conf" | substitute_ports > /etc/nginx/sites-available/mateplace.conf
   fi
 
   ln -sf /etc/nginx/sites-available/mateplace.conf /etc/nginx/sites-enabled/mateplace.conf
@@ -257,7 +271,7 @@ configure_nginx() {
 
 issue_ssl_certificate() {
   need_root_for_nginx
-  load_domains_from_env
+  load_env_config
 
   if [[ -f "$CERT_DIR/fullchain.pem" ]]; then
     log "Сертификат уже есть: $CERT_DIR"
@@ -286,25 +300,25 @@ wait_for_health() {
   log "Проверка backend (до 30 с)…"
   local i code
   for i in $(seq 1 15); do
-    if curl -sf http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
-      echo "OK: $(curl -sf http://127.0.0.1:18080/api/health)"
+    if curl -sf "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
+      echo "OK: $(curl -sf "http://127.0.0.1:${BACKEND_PORT}/api/health")"
       return 0
     fi
     sleep 2
   done
-  warn "backend не отвечает на :18080 — смотрите: ${COMPOSE[*]} logs backend"
+  warn "backend не отвечает на :${BACKEND_PORT} — смотрите: ${COMPOSE[*]} logs backend"
 }
 
 print_summary() {
-  load_domains_from_env
+  load_env_config
   echo ""
   log "Статус контейнеров"
   "${COMPOSE[@]}" ps || true
 
   wait_for_health
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' http://127.0.0.1:15173/ 2>/dev/null || echo '000')"
-  echo "Frontend :15173 → HTTP $code (ожидается 200)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "http://127.0.0.1:${FRONTEND_PORT}/" 2>/dev/null || echo '000')"
+  echo "Frontend :${FRONTEND_PORT} → HTTP $code (ожидается 200)"
 
   if [[ -f "$CERT_DIR/fullchain.pem" ]]; then
     echo ""
