@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.activities import ACTIVITIES
@@ -125,6 +125,106 @@ def entry_owned_by_current_user(entry: TimeEntry, auth: TfsAuth) -> bool:
 
 def filter_entries_for_user(entries: list[TimeEntry], auth: TfsAuth) -> list[TimeEntry]:
     return [entry for entry in entries if entry_owned_by_current_user(entry, auth)]
+
+
+def _entry_source_rank(sync_key: str | None) -> int:
+    key = sync_key or ""
+    if key.startswith("tsapi:"):
+        return 0
+    if key.startswith("grid:"):
+        return 1
+    if key.startswith(("stream:", "oscar:")):
+        return 2
+    if key.startswith("tfs:"):
+        return 3
+    return 4
+
+
+def dedupe_time_entries(entries: list[TimeEntry]) -> list[TimeEntry]:
+    """
+    Одна ячейка сетки = задача списания + день.
+    При tsapi + старом grid/tfs/history оставляем tsapi; иначе одну строку с лучшим источником.
+    Несколько tsapi:… за день — разные ListDelta, часы суммируются.
+    """
+    buckets: dict[tuple, list[TimeEntry]] = defaultdict(list)
+    for entry in entries:
+        if entry.tracking_work_item_id is not None:
+            key = ("t", int(entry.tracking_work_item_id), entry.entry_date)
+        else:
+            key = ("p", entry.parent_work_item_id, entry.role, entry.activity, entry.entry_date)
+        buckets[key].append(entry)
+
+    result: list[TimeEntry] = []
+    for bucket in buckets.values():
+        tsapi_rows = [row for row in bucket if (row.tfs_sync_key or "").startswith("tsapi:")]
+        if tsapi_rows:
+            result.extend(tsapi_rows)
+            continue
+        bucket.sort(key=lambda row: _entry_source_rank(row.tfs_sync_key))
+        result.append(bucket[0])
+    return result
+
+
+def delete_duplicate_entries_in_period(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    period_end: date,
+) -> int:
+    """Удаляет из БД дубли grid/tsapi за период (оставляет dedupe_time_entries)."""
+    entries = filter_entries_for_user(
+        list(
+            db.scalars(
+                select(TimeEntry).where(
+                    TimeEntry.account_key == auth.account_key,
+                    TimeEntry.entry_date >= period_start,
+                    TimeEntry.entry_date <= period_end,
+                )
+            ).all()
+        ),
+        auth,
+    )
+    keep_ids = {entry.id for entry in dedupe_time_entries(entries)}
+    stale_ids = [entry.id for entry in entries if entry.id not in keep_ids]
+    if not stale_ids:
+        return 0
+    db.execute(delete(TimeEntry).where(TimeEntry.id.in_(stale_ids)))
+    return len(stale_ids)
+
+
+def sum_deduped_hours(
+    entries: list[TimeEntry],
+    *,
+    on_date: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> float:
+    total = 0.0
+    for entry in dedupe_time_entries(entries):
+        if on_date is not None and entry.entry_date != on_date:
+            continue
+        if period_start is not None and entry.entry_date < period_start:
+            continue
+        if period_end is not None and entry.entry_date > period_end:
+            continue
+        total += entry.hours
+    return round(total, 2)
+
+
+def _tracking_row_key(entry: TimeEntry) -> tuple[str, str, int | None]:
+    if entry.tracking_work_item_id is not None:
+        return ("", "", entry.tracking_work_item_id)
+    return (entry.role, entry.activity, None)
+
+
+def _pick_display_role_activity(entries: list[TimeEntry]) -> tuple[str, str]:
+    for entry in entries:
+        if entry.role and entry.role != "—":
+            return entry.role, entry.activity
+    if entries:
+        return entries[0].role, entries[0].activity
+    return "—", ""
 
 
 def entry_ownership_clause(auth: TfsAuth):
@@ -534,26 +634,24 @@ def build_timesheet(
     children_by_parent: dict[int, list[dict[str, Any]]] | None = None,
 ) -> TimesheetOut:
     end = period_end(period_start, view)
-    entries = filter_entries_for_user(
-        list(
-            db.scalars(
-                select(TimeEntry).where(
-                    TimeEntry.account_key == auth.account_key,
-                    TimeEntry.entry_date >= period_start,
-                    TimeEntry.entry_date <= end,
-                )
-            ).all()
-        ),
-        auth,
+    entries = dedupe_time_entries(
+        filter_entries_for_user(
+            list(
+                db.scalars(
+                    select(TimeEntry).where(
+                        TimeEntry.account_key == auth.account_key,
+                        TimeEntry.entry_date >= period_start,
+                        TimeEntry.entry_date <= end,
+                    )
+                ).all()
+            ),
+            auth,
+        )
     )
 
     by_parent: dict[int, list[TimeEntry]] = defaultdict(list)
     for entry in entries:
         by_parent[entry.parent_work_item_id].append(entry)
-
-    day_totals_map: dict[date, float] = defaultdict(float)
-    for entry in entries:
-        day_totals_map[entry.entry_date] += entry.hours
 
     groups: list[TimesheetGroupOut] = []
     closed_groups: list[TimesheetGroupOut] = []
@@ -594,11 +692,13 @@ def build_timesheet(
         parent_out = work_item_out(item)
         parent_entries = by_parent.get(parent_id, [])
         tracking_map: dict[tuple[str, str, int | None], TrackingRowOut] = {}
+        entries_by_row: dict[tuple[str, str, int | None], list[TimeEntry]] = defaultdict(list)
 
         known_tracking_ids = set(tracking_by_parent.get(parent_id, set()))
 
         for entry in parent_entries:
-            key = (entry.role, entry.activity, entry.tracking_work_item_id)
+            key = _tracking_row_key(entry)
+            entries_by_row[key].append(entry)
             if key not in tracking_map:
                 tracking_map[key] = TrackingRowOut(
                     tracking_work_item_id=entry.tracking_work_item_id,
@@ -612,6 +712,12 @@ def build_timesheet(
             row.total_hours = round(row.total_hours + entry.hours, 2)
             if entry.tracking_work_item_id is not None:
                 known_tracking_ids.add(entry.tracking_work_item_id)
+
+        for key, row in tracking_map.items():
+            role, activity = _pick_display_role_activity(entries_by_row[key])
+            row.role = role
+            row.activity = activity
+            row.title = tracking_title(role, activity)
 
         tracking_rows = [
             row for row in tracking_map.values() if row.total_hours > 0
@@ -630,6 +736,12 @@ def build_timesheet(
             closed_groups.append(group)
         else:
             groups.append(group)
+
+    day_totals_map: dict[date, float] = defaultdict(float)
+    for group in groups + closed_groups:
+        for row in group.tracking_rows:
+            for day_key, hours in row.daily_hours.items():
+                day_totals_map[date.fromisoformat(day_key)] += hours
 
     day_totals = [
         DayTotalOut(date=day, hours=round(hours, 2))
@@ -650,20 +762,28 @@ def build_timesheet(
 def build_calendar_month(db: Session, auth: TfsAuth, *, year: int, month: int) -> MonthCalendarOut:
     start = date(year, month, 1)
     end = date(year, month, monthrange(year, month)[1])
-    rows = db.execute(
-        select(TimeEntry.entry_date, func.sum(TimeEntry.hours), func.count(TimeEntry.id))
-        .where(
-            TimeEntry.account_key == auth.account_key,
-            TimeEntry.entry_date >= start,
-            TimeEntry.entry_date <= end,
-            entry_ownership_clause(auth),
+    entries = dedupe_time_entries(
+        filter_entries_for_user(
+            list(
+                db.scalars(
+                    select(TimeEntry).where(
+                        TimeEntry.account_key == auth.account_key,
+                        TimeEntry.entry_date >= start,
+                        TimeEntry.entry_date <= end,
+                    )
+                ).all()
+            ),
+            auth,
         )
-        .group_by(TimeEntry.entry_date)
-    ).all()
+    )
+    by_day: dict[date, tuple[float, int]] = defaultdict(lambda: (0.0, 0))
+    for entry in entries:
+        hours, count = by_day[entry.entry_date]
+        by_day[entry.entry_date] = (hours + entry.hours, count + 1)
 
     days = [
-        CalendarDayOut(date=row[0], hours=round(float(row[1] or 0), 2), entries_count=int(row[2] or 0))
-        for row in rows
+        CalendarDayOut(date=day, hours=round(hours, 2), entries_count=count)
+        for day, (hours, count) in sorted(by_day.items())
     ]
     total = round(sum(day.hours for day in days), 2)
     return MonthCalendarOut(year=year, month=month, days=days, total_hours=total)
@@ -727,31 +847,23 @@ def get_stats_summary(db: Session, auth: TfsAuth) -> dict[str, Any]:
     start = week_start(today)
     end = start + timedelta(days=6)
 
-    ownership = entry_ownership_clause(auth)
-    today_hours = float(
-        db.scalar(
-            select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
-                TimeEntry.account_key == auth.account_key,
-                TimeEntry.entry_date == today,
-                ownership,
-            )
-        )
-        or 0
+    week_entries = filter_entries_for_user(
+        list(
+            db.scalars(
+                select(TimeEntry).where(
+                    TimeEntry.account_key == auth.account_key,
+                    TimeEntry.entry_date >= start,
+                    TimeEntry.entry_date <= end,
+                )
+            ).all()
+        ),
+        auth,
     )
-    week_hours = float(
-        db.scalar(
-            select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
-                TimeEntry.account_key == auth.account_key,
-                TimeEntry.entry_date >= start,
-                TimeEntry.entry_date <= end,
-                ownership,
-            )
-        )
-        or 0
-    )
+    today_hours = sum_deduped_hours(week_entries, on_date=today)
+    week_hours = sum_deduped_hours(week_entries, period_start=start, period_end=end)
 
     return {
-        "todayHours": round(today_hours, 2),
+        "todayHours": today_hours,
         "todayGoal": 8.0,
         "weekHours": round(week_hours, 2),
         "weekGoal": count_weekday_goal(start, end, through=today),
@@ -768,8 +880,12 @@ def list_recent_entries(db: Session, auth: TfsAuth, *, limit: int = 8) -> list[d
             entry_ownership_clause(auth),
         )
         .order_by(desc(TimeEntry.created_at))
-        .limit(limit)
+        .limit(max(limit * 4, limit))
     ).all()
+
+    deduped_rows = dedupe_time_entries(list(rows))
+    deduped_rows.sort(key=lambda item: item.created_at, reverse=True)
+    rows = deduped_rows[:limit]
 
     parent_ids = {row.parent_work_item_id for row in rows}
     titles: dict[int, tuple[str, str]] = {}

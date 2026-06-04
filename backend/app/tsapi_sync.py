@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -14,6 +14,7 @@ from app.tfs_auth import TfsAuth
 from app.tfs_client import TfsClient
 from app.tfs_tsapi import TfsTsapiClient, delta_user_matches_auth
 from app.time_service import (
+    delete_duplicate_entries_in_period,
     owner_unique_name_for,
     parse_tracking_title,
     period_end,
@@ -24,6 +25,7 @@ from app.time_sync import (
     is_tracking_child_item,
     load_existing_sync_keys,
     mark_synced,
+    purge_imported_tfs_entries,
     should_run_sync,
 )
 
@@ -32,27 +34,6 @@ TSAPI_SYNC_PREFIX = "tsapi:"
 
 def tsapi_sync_key(delta_id: int) -> str:
     return f"{TSAPI_SYNC_PREFIX}{delta_id}"
-
-
-def purge_tsapi_entries(
-    db: Session,
-    auth: TfsAuth,
-    *,
-    period_start: date,
-    period_end: date,
-) -> int:
-    rows = db.scalars(
-        select(TimeEntry.id).where(
-            TimeEntry.account_key == auth.account_key,
-            TimeEntry.tfs_sync_key.like(f"{TSAPI_SYNC_PREFIX}%"),
-            TimeEntry.entry_date >= period_start,
-            TimeEntry.entry_date <= period_end,
-        )
-    ).all()
-    if not rows:
-        return 0
-    db.execute(delete(TimeEntry).where(TimeEntry.id.in_(rows)))
-    return len(rows)
 
 
 def _title_for_target(titles_by_id: dict[int, str], task_id: int) -> tuple[str, str]:
@@ -146,7 +127,9 @@ async def sync_from_tsapi(
     finally:
         await tfs.close()
 
-    purged = purge_tsapi_entries(db, auth, period_start=period_start, period_end=end)
+    purged = purge_imported_tfs_entries(
+        db, auth, period_start=period_start, period_end=end
+    )
     existing_keys = load_existing_sync_keys(
         db, auth, period_start=period_start, period_end=end
     )
@@ -200,6 +183,9 @@ async def sync_from_tsapi(
     finally:
         await tsapi.close()
 
+    removed_dupes = delete_duplicate_entries_in_period(
+        db, auth, period_start=period_start, period_end=end
+    )
     mark_synced(db, auth, period_start=period_start, view=view)
     db.commit()
 
@@ -208,6 +194,7 @@ async def sync_from_tsapi(
         "skipped": skipped,
         "tasks_scanned": tasks_scanned,
         "purged": purged,
+        "removed_dupes": removed_dupes,
         "period_start": period_start,
         "period_end": end,
         "cached": False,
