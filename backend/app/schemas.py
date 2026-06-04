@@ -168,6 +168,7 @@ class TimesheetSyncOut(ApiModel):
     imported: int
     skipped: int
     tasks_scanned: int
+    purged: int = 0
     period_start: date
     period_end: date
     cached: bool = False

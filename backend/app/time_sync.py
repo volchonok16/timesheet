@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -136,15 +136,70 @@ def is_tracking_child_item(child: dict[str, Any]) -> bool:
     return role in ROLE_LABELS
 
 
+def _identity_tokens_from_blob(blob: Any) -> set[str]:
+    tokens: set[str] = set()
+    if not isinstance(blob, dict):
+        return tokens
+    for key in ("displayName", "uniqueName", "name", "descriptor", "mailAddress", "emailAddress"):
+        raw = blob.get(key)
+        if raw:
+            tokens.add(str(raw).casefold())
+    id_ref = blob.get("identityRef")
+    if isinstance(id_ref, dict):
+        tokens |= _identity_tokens_from_blob(id_ref)
+    return tokens
+
+
+def update_revised_by_current_user(
+    update: dict[str, Any],
+    *,
+    display_name: str | None,
+    login: str | None,
+) -> bool:
+    """Только ревизии, которые внёс текущий пользователь (не чужие списания на той же задаче)."""
+    if not display_name and not login:
+        return True
+    author_tokens = _identity_tokens_from_blob(update.get("revisedBy"))
+    if not author_tokens:
+        return False
+    hints: list[str] = []
+    if display_name:
+        dn = display_name.casefold().strip()
+        hints.append(dn)
+        parts = dn.split()
+        if parts:
+            hints.append(parts[0])
+    if login:
+        lg = login.casefold().strip()
+        hints.append(lg)
+        if "\\" in lg:
+            hints.append(lg.split("\\")[-1])
+        if "@" in lg:
+            hints.append(lg.split("@")[0])
+    for token in author_tokens:
+        for hint in hints:
+            if not hint:
+                continue
+            if hint in token or token in hint:
+                return True
+    return False
+
+
 def filter_updates_for_sync(
     updates: list[dict[str, Any]],
     *,
     period_start: date,
+    display_name: str | None = None,
+    login: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Не разбираем всю историю с начала времён — только релевантные ревизии."""
+    """Релевантные ревизии периода, только от текущего пользователя."""
     cutoff = period_start - timedelta(days=settings.tfs_sync_update_lookback_days)
     filtered: list[dict[str, Any]] = []
     for update in updates:
+        if not update_revised_by_current_user(
+            update, display_name=display_name, login=login
+        ):
+            continue
         revised = _parse_revised_date(update.get("revisedDate"))
         if revised < cutoff:
             continue
@@ -159,13 +214,44 @@ def aggregate_slices_for_task(
     *,
     tracking_work_item_id: int,
     period_start: date,
+    display_name: str | None = None,
+    login: str | None = None,
 ) -> list[ParsedTimeSlice]:
     merged: list[ParsedTimeSlice] = []
-    for update in filter_updates_for_sync(updates, period_start=period_start):
+    for update in filter_updates_for_sync(
+        updates,
+        period_start=period_start,
+        display_name=display_name,
+        login=login,
+    ):
         merged.extend(
             parse_update_time_slices(update, tracking_work_item_id=tracking_work_item_id)
         )
     return merged
+
+
+def purge_imported_tfs_entries(
+    db: Session,
+    auth: TfsAuth,
+    *,
+    period_start: date,
+    period_end: date,
+) -> int:
+    """Удаляет ранее импортированные из TFS строки (в т.ч. чужие) перед пересборкой."""
+    rows = db.scalars(
+        select(TimeEntry.id).where(
+            TimeEntry.account_key == auth.account_key,
+            TimeEntry.tfs_sync_key.isnot(None),
+            TimeEntry.entry_date >= period_start,
+            TimeEntry.entry_date <= period_end,
+        )
+    ).all()
+    if not rows:
+        return 0
+    db.execute(
+        delete(TimeEntry).where(TimeEntry.id.in_(rows))
+    )
+    return len(rows)
 
 
 def should_run_sync(
@@ -303,18 +389,6 @@ async def collect_tracking_targets(
     return targets[: settings.tfs_sync_max_tasks]
 
 
-def _assigned_to_user(fields: dict[str, Any], user_hint: str, username: str | None) -> bool:
-    if not user_hint:
-        return True
-    assigned = str(fields.get("System.AssignedTo") or "").casefold()
-    if not assigned:
-        return True
-    if user_hint in assigned:
-        return True
-    uname = (username or "").casefold()
-    return bool(uname and uname in assigned)
-
-
 async def sync_time_from_tfs(
     db: Session,
     auth: TfsAuth,
@@ -339,11 +413,16 @@ async def sync_time_from_tfs(
     skipped = 0
     tasks_scanned = 0
     parents_touched: set[int] = set()
-    existing_keys = load_existing_sync_keys(
-        db, auth, period_start=period_start, period_end=end
-    )
 
     try:
+        user_display = await client.get_authenticated_user_name()
+        user_login = auth.username
+        purged = purge_imported_tfs_entries(
+            db, auth, period_start=period_start, period_end=end
+        )
+        existing_keys = load_existing_sync_keys(
+            db, auth, period_start=period_start, period_end=end
+        )
         targets = await collect_tracking_targets(
             client,
             db,
@@ -379,12 +458,12 @@ async def sync_time_from_tfs(
                 "imported": 0,
                 "skipped": 0,
                 "tasks_scanned": 0,
+                "purged": purged,
                 "period_start": period_start,
                 "period_end": end,
                 "cached": False,
             }
 
-        user_hint = (await client.get_authenticated_user_name() or auth.username or "").casefold()
         task_ids = [target.task_id for target in targets]
         parent_ids = list({target.parent_id for target in targets})
 
@@ -419,9 +498,6 @@ async def sync_time_from_tfs(
                     return 0, 1
 
                 fields = task_item.get("fields") or {}
-                if not _assigned_to_user(fields, user_hint, auth.username):
-                    return 0, 1
-
                 title = str(fields.get("System.Title") or f"#{task_id}")
                 role, activity = parse_tracking_title(title)
                 if not role:
@@ -441,6 +517,8 @@ async def sync_time_from_tfs(
                     updates,
                     tracking_work_item_id=task_id,
                     period_start=period_start,
+                    display_name=user_display,
+                    login=user_login,
                 ):
                     if not entry_in_period(
                         slice_.entry_date, period_start=period_start, period_end=end
@@ -497,6 +575,7 @@ async def sync_time_from_tfs(
         "imported": imported,
         "skipped": skipped,
         "tasks_scanned": tasks_scanned,
+        "purged": purged,
         "period_start": period_start,
         "period_end": end,
         "cached": False,
