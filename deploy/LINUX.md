@@ -188,6 +188,17 @@ sudo bash deploy/deploy.sh
 
 **502 Bad Gateway** — контейнеры не поднялись: `docker compose ... ps` и `logs backend`.
 
+**`parent snapshot does not exist` при сборке** — битый кэш Docker на диске:
+
+```bash
+cd /var/www/timesheet
+docker builder prune -af
+docker system prune -f
+sudo bash deploy/deploy.sh --clean-build
+```
+
+Если снова падает: `sudo systemctl restart docker`, затем `--clean-build` ещё раз.
+
 **CORS / API не отвечает** — в `.env` должны совпадать `APP_PUBLIC_URL`, `API_PUBLIC_URL`, `VITE_API_URL` с реальными HTTPS-URL; после смены пересоберите: `sudo bash deploy/deploy.sh`.
 
 **Старый скрипт** — `deploy/apply-production.sh` по-прежнему работает и вызывает `deploy.sh`.
@@ -205,4 +216,7 @@ sudo bash deploy/deploy.sh --issue-ssl
 
 # Обновление
 sudo bash deploy/deploy.sh --pull
+
+# Сборка Docker упала (snapshot not found)
+sudo bash deploy/deploy.sh --clean-build
 ```

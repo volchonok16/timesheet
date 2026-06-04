@@ -29,6 +29,7 @@ DO_BOOTSTRAP=false
 DO_PULL=false
 DO_ISSUE_SSL=false
 SKIP_NGINX=false
+DO_CLEAN_BUILD=false
 
 usage() {
   cat <<'EOF'
@@ -39,6 +40,7 @@ TFS Timesheet — deploy/deploy.sh
   sudo bash deploy/deploy.sh --bootstrap  # + Docker/nginx на чистом сервере
   sudo bash deploy/deploy.sh --pull       # git pull перед деплоем
   sudo bash deploy/deploy.sh --issue-ssl  # Let's Encrypt (нужен DNS)
+  sudo bash deploy/deploy.sh --clean-build  # если сборка: parent snapshot does not exist
   sudo bash deploy/deploy.sh --help
 
 Переменные окружения:
@@ -200,6 +202,17 @@ git_pull_if_requested() {
   git pull --ff-only
 }
 
+repair_docker_build_cache() {
+  log "Очистка кэша сборки Docker (битые snapshot)…"
+  docker builder prune -af 2>/dev/null || true
+  docker system prune -f 2>/dev/null || true
+}
+
+deploy_compose_build() {
+  # Без BuildKit — стабильнее на VPS без docker-buildx
+  env DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 "${COMPOSE[@]}" up -d --build
+}
+
 stop_compose_port_conflicts() {
   # Освобождаем текущие и старые порты (Vite 5173, прежние 8000/18080/15173…)
   local project
@@ -233,8 +246,15 @@ deploy_compose() {
   "${COMPOSE[@]}" down --remove-orphans 2>/dev/null || true
   stop_compose_port_conflicts
 
+  if $DO_CLEAN_BUILD; then
+    repair_docker_build_cache
+  fi
+
   log "Docker Compose (production)…"
-  "${COMPOSE[@]}" up -d --build
+  if ! deploy_compose_build; then
+    warn "Сборка упала. Часто помогает: sudo bash deploy/deploy.sh --clean-build"
+    die "docker compose up --build завершился с ошибкой"
+  fi
 }
 
 check_nginx_multi_site() {
@@ -371,6 +391,7 @@ while [[ $# -gt 0 ]]; do
     --pull) DO_PULL=true ;;
     --issue-ssl) DO_ISSUE_SSL=true ;;
     --skip-nginx) SKIP_NGINX=true ;;
+    --clean-build) DO_CLEAN_BUILD=true ;;
     *) die "Неизвестный аргумент: $1 (см. --help)" ;;
   esac
   shift
