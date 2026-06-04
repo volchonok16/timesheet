@@ -207,6 +207,64 @@ class TfsClient:
         items = await self.get_work_items_batch(ids[:limit])
         return [self.normalize_item(item) for item in items]
 
+    async def get_work_item_updates(self, item_id: int) -> list[dict[str, Any]]:
+        last_response: httpx.Response | None = None
+        for api_version in _api_version_candidates():
+            response = await self.client.get(
+                f"/_apis/wit/workitems/{item_id}/updates",
+                params={"api-version": api_version},
+            )
+            last_response = response
+            if response.status_code == 200:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return as_list(payload.get("value"))
+                return []
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise httpx.HTTPError(f"Failed to load updates for work item {item_id}")
+
+    async def get_parent_work_item_id(self, item_id: int) -> int | None:
+        item = await self.get_work_item(item_id, expand="Relations")
+        for relation in as_relation_list(item.get("relations")):
+            rel = relation.get("rel") or ""
+            if rel not in ("System.LinkTypes.Hierarchy-Reverse", "Parent"):
+                continue
+            url = str(relation.get("url") or "")
+            try:
+                return int(url.rstrip("/").split("/")[-1])
+            except ValueError:
+                continue
+        return None
+
+    async def find_task_ids_with_completed_work(
+        self,
+        *,
+        changed_since: date,
+        limit: int = 80,
+    ) -> list[int]:
+        project = wiql_quote(self.project)
+        task_type = wiql_quote(settings.task_type_name)
+        wiql = (
+            f"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = {project} "
+            f"AND [System.WorkItemType] = {task_type} "
+            f"AND [Microsoft.VSTS.Scheduling.CompletedWork] > 0 "
+            f"AND [System.ChangedDate] >= '{changed_since.isoformat()}' "
+            f"ORDER BY [System.ChangedDate] DESC"
+        )
+        payload = await self.run_wiql(wiql)
+        ids: list[int] = []
+        for item in as_list(payload.get("workItems")):
+            if not isinstance(item, dict):
+                continue
+            try:
+                ids.append(int(item["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if len(ids) >= limit:
+                break
+        return ids
+
     async def get_child_tasks(self, parent_id: int) -> list[dict[str, Any]]:
         parent = await self.get_work_item(parent_id, expand="Relations")
         child_ids: list[int] = []

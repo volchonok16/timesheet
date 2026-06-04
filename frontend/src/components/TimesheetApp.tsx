@@ -47,6 +47,7 @@ export default function TimesheetApp({ onLogout }: Props) {
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [statsLoading, setStatsLoading] = useState(true)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [syncing, setSyncing] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [addEntryOpen, setAddEntryOpen] = useState(false)
 
@@ -88,7 +89,7 @@ export default function TimesheetApp({ onLogout }: Props) {
     setError(null)
     try {
       const start = toIsoDate(periodStart)
-      const payload = await getJson<Timesheet>(`/api/timesheet?start=${start}&view=week`)
+      const payload = await getJson<Timesheet>(`/api/timesheet?start=${start}&view=week&sync=true`)
       setTimesheet(payload)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить табель')
@@ -101,6 +102,8 @@ export default function TimesheetApp({ onLogout }: Props) {
     setLoading(true)
     setError(null)
     try {
+      const monthStart = `${periodAnchor.year}-${String(periodAnchor.month).padStart(2, '0')}-01`
+      await apiFetch(`/api/timesheet/sync?start=${monthStart}&view=month`, { method: 'POST' })
       const params = new URLSearchParams({
         scope: view,
         year: String(periodAnchor.year),
@@ -174,6 +177,23 @@ export default function TimesheetApp({ onLogout }: Props) {
 
   const bumpRefresh = () => setRefreshKey((value) => value + 1)
 
+  const syncFromTfs = async () => {
+    setSyncing(true)
+    setError(null)
+    try {
+      const start = isCalendarView(view)
+        ? `${periodAnchor.year}-${String(periodAnchor.month).padStart(2, '0')}-01`
+        : toIsoDate(periodStart)
+      const syncView = isCalendarView(view) ? 'month' : 'week'
+      await apiFetch(`/api/timesheet/sync?start=${start}&view=${syncView}`, { method: 'POST' })
+      bumpRefresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось подтянуть списания из TFS')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const logout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' })
     clearSessionId()
@@ -236,6 +256,14 @@ export default function TimesheetApp({ onLogout }: Props) {
             <h2>{label}</h2>
             <button type="button" className="btn ghost today-btn" onClick={goToday}>
               Сегодня
+            </button>
+            <button
+              type="button"
+              className="btn ghost today-btn"
+              disabled={syncing}
+              onClick={() => void syncFromTfs()}
+            >
+              {syncing ? 'Подтягиваем…' : 'Из TFS'}
             </button>
           </div>
           <button type="button" className="btn ghost period-nav" onClick={() => shiftPeriod(1)}>

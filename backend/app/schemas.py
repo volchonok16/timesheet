@@ -164,6 +164,14 @@ class StatsSummaryOut(ApiModel):
     week_end: date
 
 
+class TimesheetSyncOut(ApiModel):
+    imported: int
+    skipped: int
+    tasks_scanned: int
+    period_start: date
+    period_end: date
+
+
 class RecentEntryOut(ApiModel):
     id: int
     parent_work_item_id: int

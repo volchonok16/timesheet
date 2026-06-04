@@ -28,6 +28,7 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 - Модальное окно «Внести время»: роль, активность, дата, добавить/вычесть, часы/минуты, комментарий
 - Создание/поиск дочерней задачи в TFS и обновление `Microsoft.VSTS.Scheduling.CompletedWork`
 - Локальное хранение дневных списаний в PostgreSQL (для календаря и табеля)
+- Подтягивание списаний из TFS: история задачи и изменения **Completed Work** (если время вносили в TFS или других системах)
 
 ## Архитектура
 
@@ -42,13 +43,14 @@ Production-деплой на Linux: `sudo bash deploy/deploy.sh` — см. [depl
 
 - `POST /api/auth/login` — вход
 - `GET /api/work-items/search?q=` — поиск
-- `GET /api/timesheet?start=&view=week|month` — табель
+- `GET /api/timesheet?start=&view=week|month&sync=true` — табель (с опциональной синхронизацией из TFS)
+- `POST /api/timesheet/sync?start=&view=week|month` — только синхронизация из TFS
 - `GET /api/calendar?year=&month=` — календарь
 - `POST /api/time-entries` — списание времени
 
 ## Дальнейшие улучшения
 
-- Синхронизация истории из TFS (если списания уже есть только в Completed Work)
+- Импорт списаний из внешних time-tracking систем (не только TFS Completed Work)
 - Шаблоны time-shooting (8ч одним кликом, копирование прошлой недели)
 - Фильтры по area path / команде
 - Экспорт в Excel

@@ -24,6 +24,7 @@ from app.schemas import (
     TimeEntryIn,
     TimeEntryOut,
     TimesheetOut,
+    TimesheetSyncOut,
     TfsAuthIn,
     WorkItemOut,
 )
@@ -44,6 +45,7 @@ from app.time_service import (
     week_start,
     work_item_out,
 )
+from app.time_sync import sync_time_from_tfs
 from app.tfs_auth import TfsAuth, build_tfs_auth
 from app.tfs_client import TfsClient
 
@@ -64,6 +66,15 @@ def startup() -> None:
     with engine.begin() as conn:
         conn.execute(
             text("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS cost_project VARCHAR(512)")
+        )
+        conn.execute(
+            text("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS tfs_sync_key VARCHAR(160)")
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_time_entries_account_sync_key "
+                "ON time_entries (account_key, tfs_sync_key) WHERE tfs_sync_key IS NOT NULL"
+            )
         )
 
 
@@ -179,10 +190,33 @@ async def cost_project_options(
         await client.close()
 
 
+@app.post("/api/timesheet/sync", response_model=TimesheetSyncOut)
+async def sync_timesheet_from_tfs(
+    start: date | None = Query(default=None),
+    view: str = Query(default="week", pattern="^(week|month)$"),
+    auth: TfsAuth = Depends(require_tfs_auth),
+    db: Session = Depends(get_db),
+) -> TimesheetSyncOut:
+    today = date.today()
+    if start is None:
+        start = month_start(today) if view == "month" else week_start(today)
+    elif view == "month":
+        start = month_start(start)
+    else:
+        start = week_start(start)
+
+    try:
+        payload = await sync_time_from_tfs(db, auth, period_start=start, view=view)
+        return TimesheetSyncOut(**payload)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
+
+
 @app.get("/api/timesheet", response_model=TimesheetOut)
 async def get_timesheet(
     start: date | None = Query(default=None),
     view: str = Query(default="week", pattern="^(week|month)$"),
+    sync: bool = Query(default=True, description="Подтянуть списания из TFS перед построением табеля"),
     auth: TfsAuth = Depends(require_tfs_auth),
     db: Session = Depends(get_db),
 ) -> TimesheetOut:
@@ -193,6 +227,12 @@ async def get_timesheet(
         start = month_start(start)
     else:
         start = week_start(start)
+
+    if sync:
+        try:
+            await sync_time_from_tfs(db, auth, period_start=start, view=view)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"TFS sync: {exc}") from exc
 
     client = TfsClient(auth)
     try:

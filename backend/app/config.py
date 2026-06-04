@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     tfs_api_version: str = Field(default="6.1", alias="TFS_API_VERSION")
     tfs_batch_size: int = Field(default=100, alias="TFS_BATCH_SIZE")
     tfs_request_delay_seconds: float = Field(default=0.15, alias="TFS_REQUEST_DELAY_SECONDS")
+    tfs_sync_max_tasks: int = Field(default=80, alias="TFS_SYNC_MAX_TASKS")
 
     task_type_name: str = Field(default="Задача", alias="TFS_TASK_TYPE")
     requirement_type_name: str = Field(default="Требование", alias="TFS_REQUIREMENT_TYPE")
