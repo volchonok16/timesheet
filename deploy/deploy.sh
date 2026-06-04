@@ -114,7 +114,7 @@ patch_env_domains() {
     echo "TIMESHEET_API_DOMAIN=${API_DOMAIN}"
     echo "APP_PUBLIC_URL=https://${DOMAIN}"
     echo "API_PUBLIC_URL=https://${API_DOMAIN}"
-    echo "VITE_API_URL=https://${API_DOMAIN}"
+    echo "VITE_API_URL="
     echo "CORS_ALLOW_ORIGINS=https://${DOMAIN},https://www.${DOMAIN}"
   } > .env
   rm -f "$tmp"

@@ -57,9 +57,10 @@ class Settings(BaseSettings):
             "http://127.0.0.1:30080",
             "https://tfs.t2.ru",
         ]
-        app_url = self.app_public_url.rstrip("/")
-        if app_url:
-            origins.append(app_url)
+        for url in (self.app_public_url, self.api_public_url):
+            value = url.rstrip("/")
+            if value:
+                origins.append(value)
         for item in self.cors_allow_origins.split(","):
             value = item.strip().rstrip("/")
             if value:

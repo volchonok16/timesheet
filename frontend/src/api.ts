@@ -2,16 +2,19 @@ const SESSION_KEY = 'tfsTimesheetSessionId'
 
 function resolveApiBase(): string {
   const fromEnv = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/$/, '') ?? ''
-  if (fromEnv) return fromEnv
-  if (typeof window === 'undefined') return ''
+  if (typeof window === 'undefined') {
+    return fromEnv
+  }
   const { hostname, protocol, port } = window.location
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     if (port === '31573') return `${protocol}//${hostname}:31080`
-    // За nginx (30080, 80 и т.д.) — относительные пути /api
     return ''
   }
-  // Production: отдельный API-домен задаётся через VITE_API_URL
-  return ''
+  // mateplace.ru: nginx проксирует /api → backend (без CORS и без api.mateplace.ru)
+  if (hostname === 'mateplace.ru' || hostname === 'www.mateplace.ru') {
+    return ''
+  }
+  return fromEnv
 }
 
 const apiBase = resolveApiBase()

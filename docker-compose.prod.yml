@@ -18,6 +18,6 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-https://api.mateplace.ru}
+        VITE_API_URL: ${VITE_API_URL:-}
     ports:
       - "127.0.0.1:${TIMESHEET_FRONTEND_PORT:-31573}:5173"
